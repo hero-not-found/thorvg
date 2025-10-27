@@ -167,6 +167,51 @@ struct LottieFxCustom : LottieEffect
         ARRAY_FOREACH(p, props) delete(p->property);
     }
 
+    LottieProperty* override(LottieProperty* prop, bool release = false) override
+    {
+        LottieProperty* backup = nullptr;
+        ARRAY_FOREACH(p, props) {
+            if (p->property->type != prop->type || p->property->sid != prop->sid) continue;
+            auto target = p->property;
+            switch (prop->type) {
+                case LottieProperty::Type::Float: {
+                    auto cur = static_cast<LottieFloat*>(target);
+                    if (release) cur->release();
+                    else backup = new LottieFloat(*cur);
+
+                    cur->copy(*static_cast<LottieFloat*>(prop), false);
+                    break;
+                }
+                case LottieProperty::Type::Color: {
+                    auto cur = static_cast<LottieColor*>(target);
+                    if (release) cur->release();
+                    else backup = new LottieColor(*cur);
+
+                    cur->copy(*static_cast<LottieColor*>(prop), false);
+                    break;
+                }
+                case LottieProperty::Type::Vector: {
+                    auto cur = static_cast<LottieVector*>(target);
+                    if (release) cur->release();
+                    else backup = new LottieVector(*cur);
+
+                    cur->copy(*static_cast<LottieVector*>(prop), false);
+                    break;
+                }
+                case LottieProperty::Type::Integer: {
+                    auto cur = static_cast<LottieInteger*>(target);
+                    if (release) cur->release();
+                    else backup = new LottieInteger(*cur);
+
+                    cur->copy(*static_cast<LottieInteger*>(prop), false);
+                    break;
+                }
+                default: break;
+            }
+        }
+        return backup;
+    }
+
     using LottieObject::property;
     Property* property(int type)
     {

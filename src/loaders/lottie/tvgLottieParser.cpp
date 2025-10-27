@@ -464,7 +464,7 @@ void LottieParser::parsePropertyInternal(T& prop)
 }
 
 
-void LottieParser::registerSlot(LottieObject* obj, const char* sid, LottieProperty::Type type)
+LottieSlot* LottieParser::registerSlot(LottieObject* obj, const char* sid, LottieProperty::Type type)
 {
     auto val = djb2Encode(sid);
 
@@ -472,9 +472,12 @@ void LottieParser::registerSlot(LottieObject* obj, const char* sid, LottieProper
     ARRAY_FOREACH(p, comp->slots) {
         if ((*p)->sid != val) continue;
         (*p)->pairs.push({obj});
-        return;
+        return *p;
     }
-    comp->slots.push(new LottieSlot(context.layer, context.parent, val, obj, type));
+
+    auto slot = new LottieSlot(context.layer, context.parent, val, obj, type);
+    comp->slots.push(slot);
+    return slot;
 }
 
 
@@ -1310,6 +1313,7 @@ bool LottieParser::parseEffect(LottieEffect* effect, void(LottieParser::*func)(L
     int idx = 0;
     while (nextArrayValue()) {
         enterObject();
+        const char* sid = nullptr;
         while (auto key = nextObjectKey()) {
             if (custom && KEY_AS("ty")) property = static_cast<LottieFxCustom*>(effect)->property(getInt());
             else if (KEY_AS("v"))
@@ -1318,6 +1322,7 @@ bool LottieParser::parseEffect(LottieEffect* effect, void(LottieParser::*func)(L
                     enterObject();
                     while (auto key = nextObjectKey()) {
                         if (KEY_AS("k")) (this->*func)(effect, idx++);
+                        else if (KEY_AS("sid")) sid = getString();
                         else skip();
                     }
                 } else (this->*func)(effect, idx++);
@@ -1325,6 +1330,11 @@ bool LottieParser::parseEffect(LottieEffect* effect, void(LottieParser::*func)(L
             else if (property && KEY_AS("nm")) property->nm = djb2Encode(getString());
             else if (property && KEY_AS("mn")) property->mn = djb2Encode(getString());
             else skip();
+        }
+
+        if (sid && property) {
+            auto slot = registerSlot(effect, sid, property->property->type);
+            property->property->sid = slot->sid;
         }
     }
     return true;
