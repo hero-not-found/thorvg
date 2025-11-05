@@ -59,8 +59,15 @@ struct RenderText
     float capScale, firstMargin;
     LottieTextFollowPath* follow;
 
-    RenderText(LottieText* text, const TextDocument& doc) : p(doc.text), nChars(strlen(p)), scale(doc.size), textScene(Scene::gen()), lineScene(Scene::gen())
+    bool local = false;  //local or url
+
+    RenderText(LottieText* text, const TextDocument& doc, bool local)
     {
+        p = doc.text;
+        scale = local ? doc.size : doc.size * 75.0f;   //1 pt = 1/72; 1 in = 96 px; -> 72/96 = 0.75
+        nChars = strlen(p);
+        textScene = Scene::gen();
+        lineScene = Scene::gen();
     }
 
     ~RenderText()
@@ -171,7 +178,7 @@ struct LottieBuilder
 private:
     void appendRect(Shape* shape, Point& pos, Point& size, float r, bool clockwise, RenderContext* ctx);
     bool fragmented(LottieGroup* parent, LottieObject** child, Inlist<RenderContext>& contexts, RenderContext* ctx, RenderFragment fragment);
-    Shape* textShape(LottieText* text, float frameNo, const TextDocument& doc, LottieGlyph* glyph, const RenderText& ctx);
+    Paint* glyph(LottieText* text, float frameNo, const TextDocument& doc, LottieGlyph* glyph, const RenderText& ctx);
 
     void updateStrokeEffect(LottieLayer* layer, LottieFxStroke* effect, float frameNo);
     void updateEffect(LottieLayer* layer, float frameNo, uint8_t quality);
@@ -181,8 +188,6 @@ private:
     void updatePrecomp(LottieComposition* comp, LottieLayer* precomp, float frameNo, Tween& tween);
     void updateSolid(LottieLayer* layer);
     void updateImage(LottieGroup* layer);
-    void updateURLFont(LottieLayer* layer, LottieFont* font, const TextDocument& doc);
-    void updateLocalFont(LottieLayer* layer, float frameNo, LottieText* text, const TextDocument& doc);
     bool updateTextRange(LottieText* text, float frameNo, Shape* shape, const TextDocument& doc, RenderText& ctx);
     void updateText(LottieLayer* layer, float frameNo);
     void updateMasks(LottieLayer* layer, float frameNo);

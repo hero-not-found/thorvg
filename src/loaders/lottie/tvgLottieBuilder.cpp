@@ -913,62 +913,34 @@ void LottieBuilder::updateImage(LottieGroup* layer)
 }
 
 
-void LottieBuilder::updateURLFont(LottieLayer* layer, LottieFont* font, const TextDocument& doc)
-{
-    const auto delim = "\r\n\3";
-    const auto size = doc.size * 75.0f; //1 pt = 1/72; 1 in = 96 px; -> 72/96 = 0.75
-    const auto lineHeight = doc.size * 100.0f;
-
-    auto buf = (char*)alloca(strlen(doc.text) + 1);
-    strcpy(buf, doc.text);
-    auto token = std::strtok(buf, delim);
-
-    auto cnt = 0;
-    while (token) {
-        auto txt = Text::gen();
-        if (txt->font(doc.name) != Result::Success) {
-            if (!(font && resolver && resolver->func(txt, font->path, resolver->data))) {
-                txt->font(nullptr);  //fallback to any available font
-            }
-        }
-        txt->size(size);
-        txt->text(token);
-        txt->fill(doc.color.r, doc.color.g, doc.color.b);
-        txt->align(-doc.justify, 0.0f);
-        txt->translate(0.0f, lineHeight * cnt - lineHeight);
-
-        token = std::strtok(nullptr, delim);
-        layer->scene->push(txt);
-        cnt++;
-    }
-}
-
-
-Shape* LottieBuilder::textShape(LottieText* text, float frameNo, const TextDocument& doc, LottieGlyph* glyph, const RenderText& ctx)
+Paint* LottieBuilder::glyph(LottieText* text, float frameNo, const TextDocument& doc, LottieGlyph* glyph, const RenderText& ctx)
 {
     auto& transform = ctx.lineScene->transform();
-    auto shape = text->pooling();
-    shape->reset();
 
-    ARRAY_FOREACH(p, glyph->children) {
-        auto group = static_cast<LottieGroup*>(*p);
-        ARRAY_FOREACH(p, group->children) {
-            if (static_cast<LottiePath*>(*p)->pathset(frameNo, SHAPE(shape)->rs.path, nullptr, tween, exps)) {
-                PAINT(shape)->mark(RenderUpdateFlag::Path);
+    if (ctx.local) {
+        auto shape = text->pooling();
+        shape->reset();
+        ARRAY_FOREACH(p, glyph->children) {
+            auto group = static_cast<LottieGroup*>(*p);
+            ARRAY_FOREACH(p, group->children) {
+                if (static_cast<LottiePath*>(*p)->pathset(frameNo, SHAPE(shape)->rs.path, nullptr, tween, exps)) {
+                    PAINT(shape)->mark(RenderUpdateFlag::Path);
+                }
             }
         }
+        shape->fill(doc.color.r, doc.color.g, doc.color.b);
+        shape->translate(ctx.cursor.x - transform.e13, ctx.cursor.y - transform.e23);
+        shape->opacity(255);
+        if (doc.stroke.width > 0.0f) {
+            shape->strokeJoin(StrokeJoin::Round);
+            shape->strokeWidth(doc.stroke.width / ctx.scale);
+            shape->strokeFill(doc.stroke.color.r, doc.stroke.color.g, doc.stroke.color.b);
+            shape->order(doc.stroke.below);
+        }
+        return shape;
+    } else {
+        //TODO:
     }
-    shape->fill(doc.color.r, doc.color.g, doc.color.b);
-    shape->translate(ctx.cursor.x - transform.e13, ctx.cursor.y - transform.e23);
-    shape->opacity(255);
-
-    if (doc.stroke.width > 0.0f) {
-        shape->strokeJoin(StrokeJoin::Round);
-        shape->strokeWidth(doc.stroke.width / ctx.scale);
-        shape->strokeFill(doc.stroke.color.r, doc.stroke.color.g, doc.stroke.color.b);
-        shape->order(doc.stroke.below);
-    }
-    return shape;
 }
 
 
@@ -1073,9 +1045,43 @@ static void _commit(LottieGlyph* glyph, Shape* shape, const RenderText& ctx)
 }
 
 
-void LottieBuilder::updateLocalFont(LottieLayer* layer, float frameNo, LottieText* text, const TextDocument& doc)
+#if 0
+void LottieBuilder::updateURLFont(LottieLayer* layer, LottieFont* font, const TextDocument& doc)
 {
-    RenderText ctx(text, doc);
+    const auto delim = "\r\n\3";
+    const auto size = doc.size * 75.0f; //1 pt = 1/72; 1 in = 96 px; -> 72/96 = 0.75
+    const auto lineHeight = doc.size * 100.0f;
+
+    auto buf = (char*)alloca(strlen(doc.text) + 1);
+    strcpy(buf, doc.text);
+    auto token = std::strtok(buf, delim);
+
+    auto cnt = 0;
+    while (token) {
+        auto txt = Text::gen();
+        if (txt->font(doc.name) != Result::Success) {
+            if (!(font && resolver && resolver->func(txt, font->path, resolver->data))) {
+                txt->font(nullptr);  //fallback to any available font
+            }
+        }
+        txt->size(size);
+        txt->text(token);
+        txt->fill(doc.color.r, doc.color.g, doc.color.b);
+        txt->align(-doc.justify, 0.0f);
+        txt->translate(0.0f, lineHeight * cnt - lineHeight);
+
+        token = std::strtok(nullptr, delim);
+        layer->scene->push(txt);
+        cnt++;
+    }
+}
+#endif
+
+void LottieBuilder::updateText(LottieLayer* layer, float frameNo)
+{
+    auto text = static_cast<LottieText*>(layer->children.first());
+    auto& doc = text->doc(frameNo, exps);
+    RenderText ctx(text, doc, (text->font && text->font->origin == LottieFont::Origin::Local && !text->font->chars.empty()));
     ctx.follow = (text->follow && ((uint32_t)text->follow->maskIdx < layer->masks.count)) ? text->follow : nullptr;
     ctx.firstMargin = ctx.follow ? ctx.follow->prepare(layer->masks[ctx.follow->maskIdx], frameNo, ctx.scale, tween, exps) : 0.0f;
 
@@ -1150,9 +1156,9 @@ void LottieBuilder::updateLocalFont(LottieLayer* layer, float frameNo, LottieTex
                     ctx.lineScene = Scene::gen();
                     ctx.lineScene->translate(ctx.cursor.x, ctx.cursor.y);
                 }
-                auto shape = textShape(text, frameNo, doc, glyph, ctx);
-                if (!updateTextRange(text, frameNo, shape, doc, ctx)) {
-                    _commit(glyph, shape, ctx);
+                auto paint = this->glyph(text, frameNo, doc, glyph, ctx);
+                if (!updateTextRange(text, frameNo, paint, doc, ctx)) {
+                    _commit(glyph, paint, ctx);
                 }
                 ctx.cursor.x += (glyph->width + doc.tracking) * ctx.capScale;    //advance the cursor position horizontally
                 ctx.p += glyph->len;
@@ -1166,16 +1172,6 @@ void LottieBuilder::updateLocalFont(LottieLayer* layer, float frameNo, LottieTex
             ++ctx.idx;
         }
     }
-}
-
-
-void LottieBuilder::updateText(LottieLayer* layer, float frameNo)
-{
-    auto text = static_cast<LottieText*>(layer->children.first());
-    auto& doc = text->doc(frameNo, exps);
-
-    if (text->font && text->font->origin == LottieFont::Origin::Local) updateLocalFont(layer, frameNo, text, doc);
-    else updateURLFont(layer, text->font, doc);
 }
 
 
