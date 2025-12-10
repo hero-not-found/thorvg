@@ -31,9 +31,9 @@
 #include "esp_heap_caps.h"
 #endif
 
-// separate memory alloators for clean customization
+// separate memory allocators for clean customization
 namespace tvg {
-template <typename T = void> static inline T *malloc(size_t size) {
+template <typename T = void> static inline T* malloc(size_t size) {
 #ifdef ESP_PLATFORM
   // Try SPIRAM first for large allocations on ESP32
   auto ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -41,13 +41,13 @@ template <typename T = void> static inline T *malloc(size_t size) {
     // Fallback to internal RAM if SPIRAM allocation fails
     ptr = std::malloc(size);
   }
-  return static_cast<T>(ptr);
+  return reinterpret_cast<T*>(ptr);
 #else
-  return static_cast<T>(std::malloc(size));
+  return reinterpret_cast<T*>(std::malloc(size));
 #endif
 }
 
-template <typename T = void> static inline T *calloc(size_t nmem, size_t size) {
+template <typename T = void> static inline T* calloc(size_t nmem, size_t size) {
 #ifdef ESP_PLATFORM
   // Try SPIRAM first for large allocations on ESP32
   auto ptr = heap_caps_calloc(nmem, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -55,14 +55,13 @@ template <typename T = void> static inline T *calloc(size_t nmem, size_t size) {
     // Fallback to internal RAM if SPIRAM allocation fails
     ptr = std::calloc(nmem, size);
   }
-  return static_cast<T>(ptr);
+  return reinterpret_cast<T*>(ptr);
 #else
-  return static_cast<T>(std::calloc(nmem, size));
+  return reinterpret_cast<T*>(std::calloc(nmem, size));
 #endif
 }
 
-template <typename T = void> static inline T *realloc(T *ptr, size_t size) {
-
+template <typename T = void> static inline T* realloc(T* ptr, size_t size) {
 #ifdef ESP_PLATFORM
   // For ESP32, use heap_caps_realloc if the pointer was allocated with
   // heap_caps
@@ -72,13 +71,13 @@ template <typename T = void> static inline T *realloc(T *ptr, size_t size) {
     // Fallback to standard realloc
     new_ptr = std::realloc(ptr, size);
   }
-  return static_cast<T>(new_ptr);
+  return reinterpret_cast<T*>(new_ptr);
 #else
-  return static_cast<T>(std::realloc(ptr, size));
+  return reinterpret_cast<T*>(std::realloc(ptr, size));
 #endif
 }
 
-template <typename T = void> static inline void free(T *ptr) { std::free(ptr); }
+template <typename T = void> static inline void free(T* ptr) { std::free(ptr); }
 } // namespace tvg
 
 #endif //_TVG_ALLOCATOR_H_
