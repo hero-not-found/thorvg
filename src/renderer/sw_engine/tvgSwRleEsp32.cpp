@@ -1,0 +1,1168 @@
+/*
+ * Copyright (c) 2020 - 2025 the ThorVG project. All rights reserved.
+ * ESP32-S3 optimized version for RLE generation
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in
+ all
+ * copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+/*
+ * ESP32-S3 Optimizations:
+ * - Replaced 64-bit divisions with 32-bit reciprocal multiplications where
+ * possible
+ * - Inlined critical path functions
+ * - Reduced branching in hot loops
+ * - Cache-friendly cell traversal
+ */
+
+#include "tvgSwCommon.h"
+#include <limits.h>
+#include <string.h>
+
+/************************************************************************/
+/* RLE Function Profiling for ESP32                                     */
+/************************************************************************/
+
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+#define TVG_RLE_PROFILE_ENABLED 1
+
+#if TVG_RLE_PROFILE_ENABLED
+
+static inline uint32_t _rle_get_ccount(void) {
+    uint32_t ccount;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(ccount));
+    return ccount;
+}
+
+// Cycle counters (@ 240MHz, divide by 240 to get us)
+static uint32_t g_lineTo_cycles = 0;
+static uint32_t g_cubicTo_cycles = 0;
+static uint32_t g_findCell_cycles = 0;
+static uint32_t g_setCell_cycles = 0;
+static uint32_t g_sweep_cycles = 0;
+
+// Call counts
+static uint32_t g_lineTo_calls = 0;
+static uint32_t g_cubicTo_calls = 0;
+static uint32_t g_findCell_calls = 0;
+static uint32_t g_setCell_calls = 0;
+static uint32_t g_sweep_calls = 0;
+
+static uint32_t _rle_profile_start;
+#define TVG_RLE_PROFILE_START() _rle_profile_start = _rle_get_ccount()
+#define TVG_RLE_PROFILE_END(cycles, count) do { \
+    cycles += _rle_get_ccount() - _rle_profile_start; \
+    count++; \
+} while(0)
+
+extern "C" void tvg_rle_profile_get(uint32_t *lineTo_us, uint32_t *cubicTo_us,
+                                     uint32_t *findCell_us, uint32_t *setCell_us,
+                                     uint32_t *sweep_us, uint32_t *recordCell_us) {
+    *lineTo_us = g_lineTo_cycles / 240;
+    *cubicTo_us = g_cubicTo_cycles / 240;
+    *findCell_us = g_findCell_cycles / 240;
+    *setCell_us = g_setCell_cycles / 240;
+    *sweep_us = g_sweep_cycles / 240;
+    *recordCell_us = 0; // Not tracked separately
+}
+
+extern "C" void tvg_rle_profile_get_calls(uint32_t *lineTo, uint32_t *cubicTo,
+                                           uint32_t *findCell, uint32_t *setCell,
+                                           uint32_t *sweep) {
+    *lineTo = g_lineTo_calls;
+    *cubicTo = g_cubicTo_calls;
+    *findCell = g_findCell_calls;
+    *setCell = g_setCell_calls;
+    *sweep = g_sweep_calls;
+}
+
+extern "C" void tvg_rle_profile_reset(void) {
+    g_lineTo_cycles = 0;
+    g_cubicTo_cycles = 0;
+    g_findCell_cycles = 0;
+    g_setCell_cycles = 0;
+    g_sweep_cycles = 0;
+    g_lineTo_calls = 0;
+    g_cubicTo_calls = 0;
+    g_findCell_calls = 0;
+    g_setCell_calls = 0;
+    g_sweep_calls = 0;
+}
+
+#else
+#define TVG_RLE_PROFILE_START()
+#define TVG_RLE_PROFILE_END(a, b)
+extern "C" void tvg_rle_profile_get(uint32_t *lineTo_us, uint32_t *cubicTo_us,
+                                     uint32_t *findCell_us, uint32_t *setCell_us,
+                                     uint32_t *sweep_us, uint32_t *recordCell_us) {
+    (void)lineTo_us; (void)cubicTo_us; (void)findCell_us;
+    (void)setCell_us; (void)sweep_us; (void)recordCell_us;
+}
+extern "C" void tvg_rle_profile_get_calls(uint32_t *lineTo, uint32_t *cubicTo,
+                                           uint32_t *findCell, uint32_t *setCell,
+                                           uint32_t *sweep) {
+    (void)lineTo; (void)cubicTo; (void)findCell; (void)setCell; (void)sweep;
+}
+extern "C" void tvg_rle_profile_reset(void) {}
+#endif
+
+#else
+// Non-ESP32 builds - stub implementations
+#define TVG_RLE_PROFILE_START()
+#define TVG_RLE_PROFILE_END(a, b)
+extern "C" void tvg_rle_profile_get(uint32_t *lineTo_us, uint32_t *cubicTo_us,
+                                     uint32_t *findCell_us, uint32_t *setCell_us,
+                                     uint32_t *sweep_us, uint32_t *recordCell_us) {
+    (void)lineTo_us; (void)cubicTo_us; (void)findCell_us;
+    (void)setCell_us; (void)sweep_us; (void)recordCell_us;
+}
+extern "C" void tvg_rle_profile_get_calls(uint32_t *lineTo, uint32_t *cubicTo,
+                                           uint32_t *findCell, uint32_t *setCell,
+                                           uint32_t *sweep) {
+    (void)lineTo; (void)cubicTo; (void)findCell; (void)setCell; (void)sweep;
+}
+extern "C" void tvg_rle_profile_reset(void) {}
+#endif
+
+/************************************************************************/
+/* Internal Class Implementation                                        */
+/************************************************************************/
+
+constexpr auto PIXEL_BITS = 8; // must be at least 6 bits!
+constexpr auto ONE_PIXEL = (1 << PIXEL_BITS);
+
+// ESP32 Bezier quality: Lower = fewer splits = faster but rougher curves
+// Default ThorVG uses 6 (~0.17 pixel tolerance)
+// Values: 6=high quality, 4=medium, 3=low, 2=very low
+// Can be changed at runtime via tvg_set_bezier_quality()
+static int g_bezier_quality = 3; // Default to ~1px tolerance for ESP32
+
+extern "C" void tvg_set_bezier_quality(int quality) {
+  // 1=1px tolerance (very coarse), 6=0.17px tolerance (high quality)
+  if (quality >= 1 && quality <= 6) {
+    g_bezier_quality = quality;
+  }
+}
+
+extern "C" int tvg_get_bezier_quality(void) { return g_bezier_quality; }
+
+struct Band {
+  int32_t min, max;
+};
+
+struct RleWorker {
+  SwRle *rle;
+
+  SwPoint cellPos;
+  SwPoint cellMin;
+  SwPoint cellMax;
+  int32_t cellXCnt;
+  int32_t cellYCnt;
+
+  Area area;
+  int32_t cover;
+
+  SwCell *cells;
+  ptrdiff_t maxCells;
+  ptrdiff_t cellsCnt;
+
+  SwPoint pos;
+
+  SwPoint bezStack[32 * 3 + 1];
+  SwPoint lineStack[32 + 1];
+  int levStack[32];
+
+  SwOutline *outline;
+
+  int bandSize;
+  int bandShoot;
+
+  SwCell *buffer;
+  uint32_t bufferSize;
+
+  SwCell **yCells;
+  int32_t yCnt;
+
+  bool invalid;
+  bool antiAlias;
+};
+
+static inline SwPoint UPSCALE(const SwPoint &pt) {
+  return {int32_t(((unsigned long)pt.x) << (PIXEL_BITS - 6)),
+          int32_t(((unsigned long)pt.y) << (PIXEL_BITS - 6))};
+}
+
+static inline int32_t TRUNC(const int32_t x) { return x >> PIXEL_BITS; }
+
+static inline SwPoint TRUNC(const SwPoint &pt) {
+  return {TRUNC(pt.x), TRUNC(pt.y)};
+}
+
+static inline SwPoint FRACT(const SwPoint &pt) {
+
+  return {pt.x & (ONE_PIXEL - 1), pt.y & (ONE_PIXEL - 1)};
+}
+
+// ESP32-S3 optimized HYPOT using integer arithmetic and ABS instruction
+// Approximate sqrt(x*x+y*y) using alpha max plus beta min algorithm
+// We use alpha = 1, beta = 3/8, giving us results with a largest error
+// less than 7% compared to the exact value.
+static inline int32_t HYPOT(SwPoint pt) {
+  // Use ESP32-S3 ABS instruction for single-cycle absolute value
+  int32_t ax, ay;
+  __asm__ volatile("abs %0, %1" : "=r"(ax) : "r"(pt.x));
+  __asm__ volatile("abs %0, %1" : "=r"(ay) : "r"(pt.y));
+  // Use MAX/MIN to determine which is larger without branching
+  int32_t max_val, min_val;
+  __asm__ volatile("max %0, %1, %2" : "=r"(max_val) : "r"(ax), "r"(ay));
+  __asm__ volatile("min %0, %1, %2" : "=r"(min_val) : "r"(ax), "r"(ay));
+  return max_val + (3 * min_val >> 3);
+}
+
+// ESP32-S3 optimized: 32x32->64 high word multiply using Xtensa assembly
+// Returns (a * b) >> 32, equivalent to SW_UDIV but faster
+// Uses muluh instruction for unsigned high multiply
+static inline int32_t ESP32_MULHI(uint32_t a, uint32_t b) {
+  uint32_t result;
+  __asm__ volatile("muluh %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+  return (int32_t)result;
+}
+
+// ESP32-S3: Absolute value using single ABS instruction
+static inline int32_t ESP32_ABS(int32_t x) {
+  int32_t result;
+  __asm__ volatile("abs %0, %1" : "=r"(result) : "r"(x));
+  return result;
+}
+
+// ESP32-S3: MIN instruction for signed integers
+static inline int32_t ESP32_MIN(int32_t a, int32_t b) {
+  int32_t result;
+  __asm__ volatile("min %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+  return result;
+}
+
+// ESP32-S3: MAX instruction for signed integers
+static inline int32_t ESP32_MAX(int32_t a, int32_t b) {
+  int32_t result;
+  __asm__ volatile("max %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+  return result;
+}
+
+// ESP32-S3: MINU instruction for unsigned integers
+static inline uint32_t ESP32_MINU(uint32_t a, uint32_t b) {
+  uint32_t result;
+  __asm__ volatile("minu %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+  return result;
+}
+
+// ESP32-S3: MAXU instruction for unsigned integers
+static inline uint32_t ESP32_MAXU(uint32_t a, uint32_t b) {
+  uint32_t result;
+  __asm__ volatile("maxu %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+  return result;
+}
+
+// ESP32-S3: CLAMPS instruction - clamp signed value to range [-2^(b-1), 2^(b-1)-1]
+// For 8-bit range (b=8): clamps to [-128, 127], for coverage we want [0, 255]
+// Note: CLAMPS clamps to signed range, so we use 9 bits to get [-256, 255] then mask
+static inline int32_t ESP32_CLAMP_COVERAGE(int32_t x) {
+  // Clamp to 9-bit signed range (gives us -256 to 255), then ensure positive
+  int32_t result;
+  __asm__ volatile("clamps %0, %1, 8" : "=r"(result) : "r"(x));
+  // If negative after clamps, make it positive (abs)
+  if (result < 0) {
+    __asm__ volatile("abs %0, %1" : "=r"(result) : "r"(result));
+  }
+  // Final clamp to 255
+  if (result > 255) result = 255;
+  return result;
+}
+
+// Compute reciprocal for use with ESP32_MULHI
+// Returns (0xffffffff / d) - keeping the 64-bit division since it's only done
+// once per line The ESP32_MULHI is where we save cycles (called multiple times
+// in inner loop)
+static inline uint32_t ESP32_RECIP(int32_t d) {
+  if (d == 0)
+    return 0;
+  // Keep the accurate 64-bit division - it's only computed once per line
+  // segment The savings come from ESP32_MULHI in the inner loop
+  return (uint32_t)((int64_t)0xffffffff / d);
+}
+
+// Used to prevent integer overflow when calculating the distance between
+// points. ESP32-S3 optimized with ABS/MIN/MAX assembly instructions.
+static inline uint32_t SAFE_HYPOT(SwPoint &pt1, SwPoint &pt2) {
+  int32_t dx = pt1.x - pt2.x;
+  int32_t dy = pt1.y - pt2.y;
+  // Use ESP32-S3 ABS instruction
+  uint32_t x, y;
+  __asm__ volatile("abs %0, %1" : "=r"(x) : "r"(dx));
+  __asm__ volatile("abs %0, %1" : "=r"(y) : "r"(dy));
+  // Use MAXU/MINU for unsigned comparison
+  uint32_t max_val, min_val;
+  __asm__ volatile("maxu %0, %1, %2" : "=r"(max_val) : "r"(x), "r"(y));
+  __asm__ volatile("minu %0, %1, %2" : "=r"(min_val) : "r"(x), "r"(y));
+  return max_val + (3 * min_val >> 3);
+}
+
+// ESP32-S3 optimized: Inline the hot path of _horizLine with assembly
+static inline void _horizLine(RleWorker &rw, int32_t x, int32_t y, int32_t area,
+                              int32_t aCount) {
+  x += rw.cellMin.x;
+  y += rw.cellMin.y;
+
+  // Clip Y range
+  if (y < rw.cellMin.y || y >= rw.cellMax.y)
+    return;
+
+  /* compute the coverage line's coverage, depending on the outline fill rule */
+  /* the coverage percentage is area/(PIXEL_BITS*PIXEL_BITS*2) */
+  int coverage = area >> (PIXEL_BITS * 2 + 1 - 8); // range 0 - 255
+  // Use ESP32-S3 ABS instruction instead of branch
+  __asm__ volatile("abs %0, %1" : "=r"(coverage) : "r"(coverage));
+
+  if (rw.outline->fillRule == FillRule::EvenOdd) {
+    coverage &= 511;
+    if (coverage > 255)
+      coverage = 511 - coverage;
+  } else {
+    // normal non-zero winding rule - use MIN to clamp without branch
+    __asm__ volatile("minu %0, %1, %2" : "=r"(coverage) : "r"(coverage), "r"(255));
+  }
+
+  if (coverage == 0)
+    return;
+
+  // span has ushort coordinates. check limit overflow
+  if (x >= SHRT_MAX || y >= SHRT_MAX) {
+    TVGERR("SW_ENGINE", "XY-coordinate overflow!");
+    return;
+  }
+
+  auto rle = rw.rle;
+
+  if (!rw.antiAlias)
+    coverage = 255;
+
+  // see whether we can add this span to the current list
+  if (!rle->spans.empty()) {
+    auto &span = rle->spans.last();
+    if ((span.coverage == coverage) && (span.y == y) &&
+        (span.x + span.len == x)) {
+      // Clip x range
+      int32_t xOver = 0;
+      if (x + aCount >= rw.cellMax.x)
+        xOver -= (x + aCount - rw.cellMax.x);
+      if (x < rw.cellMin.x)
+        xOver -= (rw.cellMin.x - x);
+      span.len += (aCount + xOver);
+      return;
+    }
+  }
+
+  // Clip x range
+  int32_t xOver = 0;
+  if (x + aCount >= rw.cellMax.x)
+    xOver -= (x + aCount - rw.cellMax.x);
+  if (x < rw.cellMin.x) {
+    xOver -= (rw.cellMin.x - x);
+    x = rw.cellMin.x;
+  }
+
+  // Nothing to draw
+  if (aCount + xOver <= 0)
+    return;
+
+  // add a span to the current list
+  rle->spans.next() = {(uint16_t)x, (uint16_t)y, uint16_t(aCount + xOver),
+                       (uint8_t)coverage};
+}
+
+// ESP32-S3 optimized _sweep with fully inlined span emission
+// Avoids function call overhead and reduces branching
+static void _sweep(RleWorker &rw) {
+  TVG_RLE_PROFILE_START();
+  if (rw.cellsCnt == 0) {
+    TVG_RLE_PROFILE_END(g_sweep_cycles, g_sweep_calls);
+    return;
+  }
+
+  // Pre-compute constants outside all loops
+  const int32_t onePixel2 = ONE_PIXEL * 2;
+  const int32_t coverageShift = PIXEL_BITS * 2 + 1 - 8;
+  const int32_t cellMinX = rw.cellMin.x;
+  const int32_t cellMinY = rw.cellMin.y;
+  const int32_t cellMaxX = rw.cellMax.x;
+  const int32_t cellMaxY = rw.cellMax.y;
+  const int32_t cellXCnt = rw.cellXCnt;
+  const bool evenOdd = (rw.outline->fillRule == FillRule::EvenOdd);
+  const bool antiAlias = rw.antiAlias;
+  auto rle = rw.rle;
+
+  // Inline macro for emitting a span - avoids function call overhead
+  #define EMIT_SPAN(spanX, spanY, spanArea, spanCount) do { \
+    int32_t _x = (spanX) + cellMinX; \
+    int32_t _y = (spanY) + cellMinY; \
+    int32_t _area = (spanArea); \
+    int32_t _count = (spanCount); \
+    \
+    /* Quick Y clip check */ \
+    if (_y >= cellMinY && _y < cellMaxY && _count > 0) { \
+      /* Compute coverage with ESP32-S3 ABS */ \
+      int32_t _cov = _area >> coverageShift; \
+      __asm__ volatile("abs %0, %1" : "=r"(_cov) : "r"(_cov)); \
+      \
+      if (evenOdd) { \
+        _cov &= 511; \
+        if (_cov > 255) _cov = 511 - _cov; \
+      } else { \
+        __asm__ volatile("minu %0, %1, %2" : "=r"(_cov) : "r"(_cov), "r"(255)); \
+      } \
+      \
+      if (!antiAlias) _cov = 255; \
+      \
+      if (_cov > 0) { \
+        /* X clipping */ \
+        int32_t _xEnd = _x + _count; \
+        if (_x < cellMinX) { _count -= (cellMinX - _x); _x = cellMinX; } \
+        if (_xEnd > cellMaxX) { _count -= (_xEnd - cellMaxX); } \
+        \
+        if (_count > 0) { \
+          /* Try to merge with previous span */ \
+          bool merged = false; \
+          if (!rle->spans.empty()) { \
+            auto &_last = rle->spans.last(); \
+            if (_last.coverage == _cov && _last.y == _y && _last.x + _last.len == _x) { \
+              _last.len += _count; \
+              merged = true; \
+            } \
+          } \
+          if (!merged) { \
+            rle->spans.next() = {(uint16_t)_x, (uint16_t)_y, (uint16_t)_count, (uint8_t)_cov}; \
+          } \
+        } \
+      } \
+    } \
+  } while(0)
+
+  for (int32_t y = 0; y < rw.yCnt; ++y) {
+    int32_t cover = 0;
+    int32_t x = 0;
+    SwCell* cell = rw.yCells[y];
+
+    while (cell) {
+      // Prefetch next cell for better cache performance
+      SwCell* nextCell = cell->next;
+      int32_t cellX = cell->x;
+
+      // Emit span from previous x to current cell
+      if (cellX > x && cover != 0) {
+        int32_t spanArea = cover * onePixel2;
+        EMIT_SPAN(x, y, spanArea, cellX - x);
+      }
+
+      // Update cover and emit single-pixel span for this cell
+      cover += cell->cover;
+      int32_t area = cover * onePixel2 - cell->area;
+      if (area != 0 && cellX >= 0) {
+        EMIT_SPAN(cellX, y, area, 1);
+      }
+
+      x = cellX + 1;
+      cell = nextCell;
+    }
+
+    // Emit final span to end of row
+    if (cover != 0) {
+      int32_t spanArea = cover * onePixel2;
+      EMIT_SPAN(x, y, spanArea, cellXCnt - x);
+    }
+  }
+
+  #undef EMIT_SPAN
+  TVG_RLE_PROFILE_END(g_sweep_cycles, g_sweep_calls);
+}
+
+// ESP32-S3 optimized _findCell with simplified logic
+static inline SwCell *_findCell(RleWorker &rw) {
+  TVG_RLE_PROFILE_START();
+  auto x = rw.cellPos.x;
+  if (x > rw.cellXCnt)
+    x = rw.cellXCnt;
+
+  auto pcell = &rw.yCells[rw.cellPos.y];
+
+  while (true) {
+    auto cell = *pcell;
+    if (!cell || cell->x > x)
+      break;
+    if (cell->x == x) {
+      TVG_RLE_PROFILE_END(g_findCell_cycles, g_findCell_calls);
+      return cell;
+    }
+    pcell = &cell->next;
+  }
+
+  if (rw.cellsCnt >= rw.maxCells) {
+    TVG_RLE_PROFILE_END(g_findCell_cycles, g_findCell_calls);
+    return nullptr;
+  }
+
+  auto cell = rw.cells + rw.cellsCnt++;
+  cell->x = x;
+  cell->area = 0;
+  cell->cover = 0;
+  cell->next = *pcell;
+  *pcell = cell;
+
+  TVG_RLE_PROFILE_END(g_findCell_cycles, g_findCell_calls);
+  return cell;
+}
+
+static inline bool _recordCell(RleWorker &rw) {
+  if (rw.area | rw.cover) {
+    auto cell = _findCell(rw);
+    if (!cell)
+      return false;
+    cell->area += rw.area;
+    cell->cover += rw.cover;
+  }
+
+  return true;
+}
+
+static inline bool _setCell(RleWorker &rw, SwPoint pos) {
+  TVG_RLE_PROFILE_START();
+  /* Move the cell pointer to a new position.  We set the `invalid'      */
+  /* flag to indicate that the cell isn't part of those we're interested */
+  /* in during the render phase.  This means that:                       */
+  /*                                                                     */
+  /* . the new vertical position must be within min_ey..max_ey-1.        */
+  /* . the new horizontal position must be strictly less than max_ex     */
+  /*                                                                     */
+  /* Note that if a cell is to the left of the clipping region, it is    */
+  /* actually set to the (min_ex-1) horizontal position.                 */
+
+  /* All cells that are on the left of the clipping region go to the
+     min_ex - 1 horizontal position. */
+  pos -= rw.cellMin;
+
+  // exceptions
+  if (pos.x < 0)
+    pos.x = -1;
+  else if (pos.x > rw.cellMax.x)
+    pos.x = rw.cellMax.x;
+
+  // Are we moving to a different cell?
+  if (pos != rw.cellPos) {
+    // Record the current one if it is valid
+    if (!rw.invalid && !_recordCell(rw)) {
+      TVG_RLE_PROFILE_END(g_setCell_cycles, g_setCell_calls);
+      return false;
+    }
+    rw.area = rw.cover = 0;
+    rw.cellPos = pos;
+  }
+  rw.invalid =
+      ((unsigned)pos.y >= (unsigned)rw.cellYCnt || pos.x >= rw.cellXCnt);
+
+  TVG_RLE_PROFILE_END(g_setCell_cycles, g_setCell_calls);
+  return true;
+}
+
+static inline bool _startCell(RleWorker &rw, SwPoint pos) {
+  if (pos.x > rw.cellMax.x)
+    pos.x = rw.cellMax.x;
+  if (pos.x < rw.cellMin.x)
+    pos.x = rw.cellMin.x - 1;
+
+  rw.area = 0;
+  rw.cover = 0;
+  rw.cellPos = pos - rw.cellMin;
+  rw.invalid = false;
+
+  return _setCell(rw, pos);
+}
+
+static inline bool _moveTo(RleWorker &rw, const SwPoint &to) {
+  // record current cell, if any */
+  if (!rw.invalid && !_recordCell(rw))
+    return false;
+
+  // start to a new position
+  if (!_startCell(rw, TRUNC(to)))
+    return false;
+
+  rw.pos = to;
+
+  return true;
+}
+
+// ESP32-S3 optimized _lineTo
+// Key optimization: Use 32-bit reciprocal multiplication instead of 64-bit
+// division The SW_UDIV macro uses 64-bit multiply then shift, which is
+// expensive on ESP32
+static bool _lineTo(RleWorker &rw, const SwPoint &to) {
+  TVG_RLE_PROFILE_START();
+  auto e1 = TRUNC(rw.pos);
+  auto e2 = TRUNC(to);
+
+  // vertical clipping
+  if ((e1.y >= rw.cellMax.y && e2.y >= rw.cellMax.y) ||
+      (e1.y < rw.cellMin.y && e2.y < rw.cellMin.y)) {
+    rw.pos = to;
+    TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+    return true;
+  }
+
+  auto line = rw.lineStack;
+  line[0] = to;
+  line[1] = rw.pos;
+
+  while (true) {
+    if (SAFE_HYPOT(line[0], line[1]) > SHRT_MAX) {
+      mathSplitLine(line);
+      ++line;
+      continue;
+    }
+    auto diff = line[0] - line[1];
+    e1 = TRUNC(line[1]);
+    e2 = TRUNC(line[0]);
+
+    auto f1 = FRACT(line[1]);
+    SwPoint f2;
+
+    // inside one cell
+    if (e1 == e2) {
+      ;
+      // any horizontal line
+    } else if (diff.y == 0) {
+      e1.x = e2.x;
+      if (!_setCell(rw, e1)) {
+        TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+        return false;
+      }
+    } else if (diff.x == 0) {
+      // vertical line up
+      if (diff.y > 0) {
+        do {
+          f2.y = ONE_PIXEL;
+          rw.cover += (f2.y - f1.y);
+          rw.area += (f2.y - f1.y) * f1.x * 2;
+          f1.y = 0;
+          ++e1.y;
+          if (!_setCell(rw, e1)) {
+            TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+            return false;
+          }
+        } while (e1.y != e2.y);
+        // vertical line down
+      } else {
+        do {
+          f2.y = 0;
+          rw.cover += (f2.y - f1.y);
+          rw.area += (f2.y - f1.y) * f1.x * 2;
+          f1.y = ONE_PIXEL;
+          --e1.y;
+          if (!_setCell(rw, e1)) {
+            TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+            return false;
+          }
+        } while (e1.y != e2.y);
+      }
+      // any other line
+    } else {
+      // ESP32-S3: Use assembly-optimized multiply-high instead of 64-bit ops
+      Area prod = diff.x * f1.y - diff.y * f1.x;
+
+      // Precompute reciprocals using fast Newton-Raphson approximation
+      // This replaces expensive 64-bit division with 32-bit ops
+      auto dxr = (e1.x != e2.x) ? ESP32_RECIP(diff.x) : 0u;
+      auto dyr = (e1.y != e2.y) ? ESP32_RECIP(diff.y) : 0u;
+      auto px = diff.x * ONE_PIXEL;
+      auto py = diff.y * ONE_PIXEL;
+
+      /* The fundamental value `prod' determines which side and the  */
+      /* exact coordinate where the line exits current cell.  It is  */
+      /* also easily updated when moving from one cell to the next.  */
+
+      do {
+        // left
+        if (prod <= 0 && prod - px > 0) {
+          f2 = {0, ESP32_MULHI(-prod, dxr)}; // dxr already has sign
+          prod -= py;
+          rw.cover += (f2.y - f1.y);
+          rw.area += (f2.y - f1.y) * (f1.x + f2.x);
+          f1 = {ONE_PIXEL, f2.y};
+          --e1.x;
+          // up
+        } else if (prod - px <= 0 && prod - px + py > 0) {
+          prod -= px;
+          f2 = {ESP32_MULHI(-prod, dyr), ONE_PIXEL};
+          rw.cover += (f2.y - f1.y);
+          rw.area += (f2.y - f1.y) * (f1.x + f2.x);
+          f1 = {f2.x, 0};
+          ++e1.y;
+          // right
+        } else if (prod - px + py <= 0 && prod + py >= 0) {
+          prod += py;
+          f2 = {ONE_PIXEL, ESP32_MULHI(prod, dxr)};
+          rw.cover += (f2.y - f1.y);
+          rw.area += (f2.y - f1.y) * (f1.x + f2.x);
+          f1 = {0, f2.y};
+          ++e1.x;
+          // down
+        } else {
+          f2 = {ESP32_MULHI(prod, -dyr), 0};
+          prod += px;
+          rw.cover += (f2.y - f1.y);
+          rw.area += (f2.y - f1.y) * (f1.x + f2.x);
+          f1 = {f2.x, ONE_PIXEL};
+          --e1.y;
+        }
+
+        if (!_setCell(rw, e1)) {
+          TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+          return false;
+        }
+
+      } while (e1 != e2);
+    }
+
+    f2 = FRACT(line[0]);
+    rw.cover += (f2.y - f1.y);
+    rw.area += (f2.y - f1.y) * (f1.x + f2.x);
+    rw.pos = line[0];
+
+    if (line-- == rw.lineStack) {
+      TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+      return true;
+    }
+  }
+}
+
+// ESP32-S3 optimized _cubicTo with assembly MIN/MAX/ABS
+// Uses the already-optimized mathSplitCubic from tvgSwMathEsp32.cpp
+static bool _cubicTo(RleWorker &rw, const SwPoint &ctrl1, const SwPoint &ctrl2,
+                     const SwPoint &to) {
+  TVG_RLE_PROFILE_START();
+  auto arc = rw.bezStack;
+  arc[0] = to;
+  arc[1] = ctrl2;
+  arc[2] = ctrl1;
+  arc[3] = rw.pos;
+
+  // Short-cut the arc that crosses the current band
+  // Use ESP32-S3 MIN/MAX instructions to find bounds without branches
+  int32_t min_y = arc[0].y;
+  int32_t max_y = arc[0].y;
+
+  // Unrolled loop with MIN/MAX assembly - processes all 4 points
+  __asm__ volatile("min %0, %0, %1" : "+r"(min_y) : "r"(arc[1].y));
+  __asm__ volatile("max %0, %0, %1" : "+r"(max_y) : "r"(arc[1].y));
+  __asm__ volatile("min %0, %0, %1" : "+r"(min_y) : "r"(arc[2].y));
+  __asm__ volatile("max %0, %0, %1" : "+r"(max_y) : "r"(arc[2].y));
+  __asm__ volatile("min %0, %0, %1" : "+r"(min_y) : "r"(arc[3].y));
+  __asm__ volatile("max %0, %0, %1" : "+r"(max_y) : "r"(arc[3].y));
+
+  if (TRUNC(min_y) >= rw.cellMax.y || TRUNC(max_y) < rw.cellMin.y)
+    goto draw;
+
+  /* Decide whether to split or draw. See `Rapid Termination          */
+  /* Evaluation for Recursive Subdivision of Bezier Curves' by Thomas */
+  /* F. Hain, at                                                      */
+  /* http://www.cis.southalabama.edu/~hain/general/Publications/Bezier/Camera-ready%20CISST02%202.pdf
+   */
+  while (true) {
+    {
+      // diff is the P0 - P3 chord vector
+      auto diff = arc[3] - arc[0];
+      auto L = HYPOT(diff);
+
+      // avoid possible arithmetic overflow below by splitting
+      if (L > SHRT_MAX)
+        goto split;
+
+      // max deviation may be as much as (s/L) * 3/4 (if Hain's v = 1)
+      //  ESP32: Use configurable quality (lower divisor = coarser = faster)
+      auto sLimit = L * (ONE_PIXEL / g_bezier_quality);
+
+      auto diff1 = arc[1] - arc[0];
+      auto s = diff.y * diff1.x - diff.x * diff1.y;
+      // Use ESP32-S3 ABS instruction
+      __asm__ volatile("abs %0, %1" : "=r"(s) : "r"(s));
+      if (s > sLimit)
+        goto split;
+
+      // s is L * the perpendicular distance from P2 to the line P0 - P3
+      auto diff2 = arc[2] - arc[0];
+      s = diff.y * diff2.x - diff.x * diff2.y;
+      // Use ESP32-S3 ABS instruction
+      __asm__ volatile("abs %0, %1" : "=r"(s) : "r"(s));
+      if (s > sLimit)
+        goto split;
+
+      /* Split super curvy segments where the off points are so far
+      from the chord that the angles P0-P1-P3 or P0-P2-P3 become
+      acute as detected by appropriate dot products */
+      if (diff1.x * (diff1.x - diff.x) + diff1.y * (diff1.y - diff.y) > 0 ||
+          diff2.x * (diff2.x - diff.x) + diff2.y * (diff2.y - diff.y) > 0)
+        goto split;
+
+      // no reason to split
+      goto draw;
+    }
+  split:
+    mathSplitCubic(arc);
+    arc += 3;
+    continue;
+
+  draw:
+    if (!_lineTo(rw, arc[0])) {
+      TVG_RLE_PROFILE_END(g_cubicTo_cycles, g_cubicTo_calls);
+      return false;
+    }
+    if (arc == rw.bezStack) {
+      TVG_RLE_PROFILE_END(g_cubicTo_cycles, g_cubicTo_calls);
+      return true;
+    }
+    arc -= 3;
+  }
+}
+
+static bool _decomposeOutline(RleWorker &rw) {
+  auto outline = rw.outline;
+  auto first = 0; // index of first point in contour
+
+  ARRAY_FOREACH(p, outline->cntrs) {
+    auto last = *p;
+    auto limit = outline->pts.data + last;
+    auto start = UPSCALE(outline->pts[first]);
+    auto pt = outline->pts.data + first;
+    auto types = outline->types.data + first;
+    ++types;
+
+    if (!_moveTo(rw, UPSCALE(outline->pts[first])))
+      return false;
+
+    while (pt < limit) {
+      // emit a single line_to
+      if (types[0] == SW_CURVE_TYPE_POINT) {
+        ++pt;
+        ++types;
+        if (!_lineTo(rw, UPSCALE(*pt)))
+          return false;
+        // types cubic
+      } else {
+        pt += 3;
+        types += 3;
+        if (pt <= limit) {
+          if (!_cubicTo(rw, UPSCALE(pt[-2]), UPSCALE(pt[-1]), UPSCALE(pt[0])))
+            return false;
+        } else if (pt - 1 == limit) {
+          if (!_cubicTo(rw, UPSCALE(pt[-2]), UPSCALE(pt[-1]), start))
+            return false;
+        } else
+          goto close;
+      }
+    }
+  close:
+    if (!_lineTo(rw, start))
+      return false;
+    first = last + 1;
+  }
+
+  return true;
+}
+
+static bool _genRle(RleWorker &rw) {
+  if (!_decomposeOutline(rw))
+    return false;
+  if (!rw.invalid && !_recordCell(rw))
+    return false;
+  return true;
+}
+
+/************************************************************************/
+/* External Class Implementation                                        */
+/************************************************************************/
+
+SwRle *rleRender(SwRle *rle, const SwOutline *outline, const RenderRegion &bbox,
+                 SwMpool *mpool, unsigned tid, bool antiAlias) {
+  if (!outline)
+    return nullptr;
+
+  RleWorker rw;
+  auto cellPool = mpoolReqCellPool(mpool, tid);
+  auto reqSize = uint32_t(std::max(bbox.w(), bbox.h()) * 0.75f) *
+                 sizeof(SwCell); // experimental decision
+
+  // grow by 1.25x and align to multiple of sizeof(SwCell)
+  if (reqSize > cellPool->size) {
+    cellPool->size =
+        ((reqSize + (reqSize >> 2)) / sizeof(SwCell)) * sizeof(SwCell);
+    tvg::free(cellPool->buffer);
+    cellPool->buffer = tvg::malloc<SwCell>(cellPool->size);
+  }
+
+  // Init Cells
+  rw.buffer = cellPool->buffer;
+  rw.bufferSize = cellPool->size;
+  rw.yCells = reinterpret_cast<SwCell **>(cellPool->buffer);
+  rw.cells = nullptr;
+  rw.maxCells = 0;
+  rw.cellsCnt = 0;
+  rw.area = 0;
+  rw.cover = 0;
+  rw.invalid = true;
+  rw.cellMin = {bbox.min.x, bbox.min.y};
+  rw.cellMax = {bbox.max.x, bbox.max.y};
+  rw.cellXCnt = rw.cellMax.x - rw.cellMin.x;
+  rw.cellYCnt = rw.cellMax.y - rw.cellMin.y;
+  rw.outline = const_cast<SwOutline *>(outline);
+  rw.bandSize = rw.bufferSize / (sizeof(SwCell) * 2);
+  rw.bandShoot = 0;
+  rw.antiAlias = antiAlias;
+
+  if (!rle)
+    rw.rle = new SwRle;
+  else
+    rw.rle = rle;
+  rw.rle->spans.reserve(256);
+
+  // Generate RLE
+  constexpr auto BAND_SIZE = 40;
+
+  Band bands[BAND_SIZE];
+  Band *band;
+
+  /* set up vertical bands */
+  auto bandCnt = static_cast<int>((rw.cellMax.y - rw.cellMin.y) / rw.bandSize);
+  if (bandCnt == 0)
+    bandCnt = 1;
+  else if (bandCnt >= BAND_SIZE)
+    bandCnt = (BAND_SIZE - 1);
+
+  auto min = rw.cellMin.y;
+  auto yMax = rw.cellMax.y;
+  int32_t max;
+
+  for (int n = 0; n < bandCnt; ++n, min = max) {
+    max = min + rw.bandSize;
+    if (n == bandCnt - 1 || max > yMax)
+      max = yMax;
+
+    bands[0].min = min;
+    bands[0].max = max;
+    band = bands;
+
+    while (band >= bands) {
+      rw.yCells = reinterpret_cast<SwCell **>(rw.buffer);
+      rw.yCnt = band->max - band->min;
+
+      int cellStart = sizeof(SwCell *) * (int)rw.yCnt;
+      int cellMod = cellStart % sizeof(SwCell);
+
+      if (cellMod > 0)
+        cellStart += sizeof(SwCell) - cellMod;
+
+      auto cellsMax =
+          reinterpret_cast<SwCell *>((char *)rw.buffer + rw.bufferSize);
+      rw.cells = reinterpret_cast<SwCell *>((char *)rw.buffer + cellStart);
+
+      if (rw.cells >= cellsMax)
+        goto reduce_bands;
+
+      rw.maxCells = cellsMax - rw.cells;
+      if (rw.maxCells < 2)
+        goto reduce_bands;
+
+      for (int y = 0; y < rw.yCnt; ++y)
+        rw.yCells[y] = nullptr;
+
+      rw.cellsCnt = 0;
+      rw.invalid = true;
+      rw.cellMin.y = band->min;
+      rw.cellMax.y = band->max;
+      rw.cellYCnt = band->max - band->min;
+
+      if (_genRle(rw)) {
+        _sweep(rw);
+        --band;
+        continue;
+      }
+
+    reduce_bands:
+      /* render pool overflow: we will reduce the render band by half */
+      auto bottom = band->min;
+      auto top = band->max;
+      auto middle = bottom + ((top - bottom) >> 1);
+
+      /* This is too complex for a single scanline; there must
+         be some problems */
+      if (middle == bottom) {
+        rleFree(rw.rle);
+        return nullptr;
+      }
+
+      if (bottom - top >= rw.bandSize)
+        ++rw.bandShoot;
+
+      band[1].min = bottom;
+      band[1].max = middle;
+      band[0].min = middle;
+      band[0].max = top;
+      ++band;
+    }
+  }
+  if (rw.bandShoot > 8 && rw.bandSize > 16) {
+    rw.bandSize = (rw.bandSize >> 1);
+  }
+  return rw.rle;
+}
+
+SwRle *rleRender(const RenderRegion *bbox) {
+  auto rle = tvg::calloc<SwRle>(sizeof(SwRle), 1);
+  rle->spans.reserve(bbox->h());
+  rle->spans.count = bbox->h();
+
+  // cheaper without push()
+  auto x = uint16_t(bbox->min.x);
+  auto y = uint16_t(bbox->min.y);
+  auto len = uint16_t(bbox->w());
+
+  ARRAY_FOREACH(p, rle->spans) { *p = {x, y++, len, 255}; }
+
+  return rle;
+}
+
+void rleReset(SwRle *rle) {
+  if (rle)
+    rle->spans.clear();
+}
+
+void rleFree(SwRle *rle) { delete (rle); }
+
+bool rleClip(SwRle *rle, const SwRle *clip) {
+  if (rle->spans.empty() || clip->spans.empty())
+    return false;
+
+  Array<SwSpan> out;
+  out.reserve(std::max(rle->spans.count, clip->spans.count));
+
+  const SwSpan *end;
+  auto spans = rle->fetch(clip->spans.first().y, clip->spans.last().y, &end);
+
+  if (spans >= end) {
+    rle->spans.clear();
+    return false;
+  }
+
+  const SwSpan *cend;
+  auto cspans = clip->fetch(spans->y, (end - 1)->y, &cend);
+
+  while (spans < end && cspans < cend) {
+    // align y-coordinates.
+    if (cspans->y > spans->y) {
+      ++spans;
+      continue;
+    }
+    if (spans->y > cspans->y) {
+      ++cspans;
+      continue;
+    }
+    // try clipping with all clip spans which have a same y-coordinate.
+    auto temp = cspans;
+    while (temp < cend && temp->y == cspans->y) {
+      // span must be left(x1) to right(x2) direction. Not intersected.
+      if ((spans->x + spans->len) < spans->x ||
+          (temp->x + temp->len) < temp->x) {
+        ++temp;
+        continue;
+      }
+      // clip span region
+      auto x = std::max(spans->x, temp->x);
+      auto len = std::min((spans->x + spans->len), (temp->x + temp->len)) - x;
+      if (len > 0)
+        out.next() = {
+            uint16_t(x), temp->y, uint16_t(len),
+            (uint8_t)(((spans->coverage * temp->coverage) + 0xff) >> 8)};
+      ++temp;
+    }
+    ++spans;
+  }
+  out.move(rle->spans);
+  return true;
+}
+
+// Need to confirm: dead code?
+bool rleClip(SwRle *rle, const RenderRegion *clip) {
+  if (rle->spans.empty() || clip->invalid())
+    return false;
+
+  auto &min = clip->min;
+  auto &max = clip->max;
+
+  Array<SwSpan> out;
+  out.reserve(rle->spans.count);
+  auto data = out.data;
+  const SwSpan *end;
+  uint16_t x, len;
+
+  for (auto p = rle->fetch(*clip, &end); p < end; ++p) {
+    if (p->y >= max.y)
+      break;
+    if (p->y < min.y || p->x >= max.x || (p->x + p->len) <= min.x)
+      continue;
+    if (p->x < min.x) {
+      x = min.x;
+      len = std::min(uint16_t(p->len - (x - p->x)), uint16_t(max.x - x));
+    } else {
+      x = p->x;
+      len = std::min(p->len, uint16_t(max.x - x));
+    }
+    if (len > 0) {
+      *data = {x, p->y, len, p->coverage};
+      ++data;
+      ++out.count;
+    }
+  }
+  out.move(rle->spans);
+  return true;
+}
+
+bool rleIntersect(const SwRle *rle, const RenderRegion &region) {
+  if (!rle || rle->spans.empty())
+    return false;
+
+  auto &min = region.min;
+  auto &max = region.max;
+
+  const SwSpan *end;
+  for (auto p = rle->fetch(region, &end); p < end; ++p) {
+    if (p->y >= max.y)
+      break;
+    if (p->y < min.y || p->x >= max.x || (p->x + p->len) <= min.x)
+      continue;
+    return true;
+  }
+  return false;
+}

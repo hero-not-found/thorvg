@@ -1,3 +1,11 @@
+if simd_type == 'esp32'
+    math_source = 'tvgSwMathEsp32.cpp'
+    rle_source = 'tvgSwRleEsp32.cpp'
+else
+    math_source = 'tvgSwMath.cpp'
+    rle_source = 'tvgSwRle.cpp'
+endif
+
 source_file = [
    'tvgSwCommon.h',
    'tvgSwRasterC.h',
@@ -6,13 +14,13 @@ source_file = [
    'tvgSwRasterTexmap.h',
    'tvgSwFill.cpp',
    'tvgSwImage.cpp',
-   'tvgSwMath.cpp',
+   math_source,
    'tvgSwMemPool.cpp',
    'tvgSwPostEffect.cpp',
    'tvgSwRenderer.h',
    'tvgSwRaster.cpp',
    'tvgSwRenderer.cpp',
-   'tvgSwRle.cpp',
+   rle_source,
    'tvgSwShape.cpp',
    'tvgSwStroke.cpp',
 ]

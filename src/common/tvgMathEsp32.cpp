@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021 - 2025 the ThorVG project. All rights reserved.
+ * ESP32-S3 optimized version using ESP-DSP library
 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,6 +22,12 @@
  */
 
 #include "tvgMath.h"
+
+// ESP-DSP function declaration - resolved at final firmware link time
+// ESP-DSP is linked via modgfx.cmake linker group
+extern "C" {
+    int dspm_mult_3x3x3_f32_ae32(const float *A, const float *B, float *C);
+}
 
 #define BEZIER_EPSILON 1e-2f
 
@@ -206,22 +213,11 @@ void rotate(Matrix* m, float degree)
 }
 
 
+// ESP-DSP optimized 3x3 matrix multiplication
 Matrix operator*(const Matrix& lhs, const Matrix& rhs)
 {
     Matrix m;
-
-    m.e11 = lhs.e11 * rhs.e11 + lhs.e12 * rhs.e21 + lhs.e13 * rhs.e31;
-    m.e12 = lhs.e11 * rhs.e12 + lhs.e12 * rhs.e22 + lhs.e13 * rhs.e32;
-    m.e13 = lhs.e11 * rhs.e13 + lhs.e12 * rhs.e23 + lhs.e13 * rhs.e33;
-
-    m.e21 = lhs.e21 * rhs.e11 + lhs.e22 * rhs.e21 + lhs.e23 * rhs.e31;
-    m.e22 = lhs.e21 * rhs.e12 + lhs.e22 * rhs.e22 + lhs.e23 * rhs.e32;
-    m.e23 = lhs.e21 * rhs.e13 + lhs.e22 * rhs.e23 + lhs.e23 * rhs.e33;
-
-    m.e31 = lhs.e31 * rhs.e11 + lhs.e32 * rhs.e21 + lhs.e33 * rhs.e31;
-    m.e32 = lhs.e31 * rhs.e12 + lhs.e32 * rhs.e22 + lhs.e33 * rhs.e32;
-    m.e33 = lhs.e31 * rhs.e13 + lhs.e32 * rhs.e23 + lhs.e33 * rhs.e33;
-
+    dspm_mult_3x3x3_f32_ae32(&lhs.e11, &rhs.e11, &m.e11);
     return m;
 }
 
@@ -237,10 +233,35 @@ bool operator==(const Matrix& lhs, const Matrix& rhs)
 }
 
 
+// ESP32-S3 FPU optimized point-matrix multiplication
+// Uses madd.s (fused multiply-add) for better performance
 void operator*=(Point& pt, const Matrix& m)
 {
-    auto tx = pt.x * m.e11 + pt.y * m.e12 + m.e13;
-    auto ty = pt.x * m.e21 + pt.y * m.e22 + m.e23;
+    float tx, ty;
+    __asm__ __volatile__(
+        "wfr f0, %2\n"           // f0 = pt.x
+        "wfr f1, %3\n"           // f1 = pt.y
+        "wfr f2, %4\n"           // f2 = m.e11
+        "wfr f3, %5\n"           // f3 = m.e12
+        "wfr f4, %6\n"           // f4 = m.e13
+        "wfr f5, %7\n"           // f5 = m.e21
+        "wfr f6, %8\n"           // f6 = m.e22
+        "wfr f7, %9\n"           // f7 = m.e23
+        // tx = pt.x * m.e11 + pt.y * m.e12 + m.e13
+        "mul.s f8, f0, f2\n"     // f8 = pt.x * m.e11
+        "madd.s f8, f1, f3\n"    // f8 += pt.y * m.e12
+        "add.s f8, f8, f4\n"     // f8 += m.e13
+        // ty = pt.x * m.e21 + pt.y * m.e22 + m.e23
+        "mul.s f9, f0, f5\n"     // f9 = pt.x * m.e21
+        "madd.s f9, f1, f6\n"    // f9 += pt.y * m.e22
+        "add.s f9, f9, f7\n"     // f9 += m.e23
+        "rfr %0, f8\n"           // tx = f8
+        "rfr %1, f9\n"           // ty = f9
+        : "=r"(tx), "=r"(ty)
+        : "r"(pt.x), "r"(pt.y), "r"(m.e11), "r"(m.e12), "r"(m.e13),
+          "r"(m.e21), "r"(m.e22), "r"(m.e23)
+        : "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"
+    );
     pt.x = tx;
     pt.y = ty;
 }
@@ -248,8 +269,31 @@ void operator*=(Point& pt, const Matrix& m)
 
 Point operator*(const Point& pt, const Matrix& m)
 {
-    auto tx = pt.x * m.e11 + pt.y * m.e12 + m.e13;
-    auto ty = pt.x * m.e21 + pt.y * m.e22 + m.e23;
+    float tx, ty;
+    __asm__ __volatile__(
+        "wfr f0, %2\n"           // f0 = pt.x
+        "wfr f1, %3\n"           // f1 = pt.y
+        "wfr f2, %4\n"           // f2 = m.e11
+        "wfr f3, %5\n"           // f3 = m.e12
+        "wfr f4, %6\n"           // f4 = m.e13
+        "wfr f5, %7\n"           // f5 = m.e21
+        "wfr f6, %8\n"           // f6 = m.e22
+        "wfr f7, %9\n"           // f7 = m.e23
+        // tx = pt.x * m.e11 + pt.y * m.e12 + m.e13
+        "mul.s f8, f0, f2\n"     // f8 = pt.x * m.e11
+        "madd.s f8, f1, f3\n"    // f8 += pt.y * m.e12
+        "add.s f8, f8, f4\n"     // f8 += m.e13
+        // ty = pt.x * m.e21 + pt.y * m.e22 + m.e23
+        "mul.s f9, f0, f5\n"     // f9 = pt.x * m.e21
+        "madd.s f9, f1, f6\n"    // f9 += pt.y * m.e22
+        "add.s f9, f9, f7\n"     // f9 += m.e23
+        "rfr %0, f8\n"           // tx = f8
+        "rfr %1, f9\n"           // ty = f9
+        : "=r"(tx), "=r"(ty)
+        : "r"(pt.x), "r"(pt.y), "r"(m.e11), "r"(m.e12), "r"(m.e13),
+          "r"(m.e21), "r"(m.e22), "r"(m.e23)
+        : "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"
+    );
     return {tx, ty};
 }
 
@@ -274,11 +318,100 @@ void normalize(Point& pt)
 }
 
 
-// Batch transform points by matrix
+// ESP32-S3 optimized batch point transform
+// Preloads matrix into FPU registers, processes points in a tight loop
 void transformPoints(Point* pts, uint32_t count, const Matrix& m)
 {
+    if (count == 0) return;
+
+    // Preload matrix elements into local vars for register allocation
+    float m11 = m.e11, m12 = m.e12, m13 = m.e13;
+    float m21 = m.e21, m22 = m.e22, m23 = m.e23;
+
     for (uint32_t i = 0; i < count; ++i) {
-        pts[i] *= m;
+        float x = pts[i].x, y = pts[i].y;
+        float tx, ty;
+        __asm__ __volatile__(
+            "wfr f0, %2\n"           // f0 = x
+            "wfr f1, %3\n"           // f1 = y
+            "wfr f2, %4\n"           // f2 = m11
+            "wfr f3, %5\n"           // f3 = m12
+            "wfr f4, %6\n"           // f4 = m13
+            "wfr f5, %7\n"           // f5 = m21
+            "wfr f6, %8\n"           // f6 = m22
+            "wfr f7, %9\n"           // f7 = m23
+            // tx = x * m11 + y * m12 + m13
+            "mul.s f8, f0, f2\n"
+            "madd.s f8, f1, f3\n"
+            "add.s f8, f8, f4\n"
+            // ty = x * m21 + y * m22 + m23
+            "mul.s f9, f0, f5\n"
+            "madd.s f9, f1, f6\n"
+            "add.s f9, f9, f7\n"
+            "rfr %0, f8\n"
+            "rfr %1, f9\n"
+            : "=r"(tx), "=r"(ty)
+            : "r"(x), "r"(y), "r"(m11), "r"(m12), "r"(m13),
+              "r"(m21), "r"(m22), "r"(m23)
+            : "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"
+        );
+        pts[i].x = tx;
+        pts[i].y = ty;
+    }
+}
+
+
+// ESP32-S3 optimized batch point interpolation with optional transform
+// Fuses lerp + transform into a single pass for better cache efficiency
+// out[i] = lerp(start[i], end[i], t) * transform (if transform != nullptr)
+// or out[i] = lerp(start[i], end[i], t) (if transform == nullptr)
+void lerpTransformPoints(Point* out, const Point* start, const Point* end, uint32_t count, float t, const Matrix* m)
+{
+    if (count == 0) return;
+
+    if (m) {
+        // Fused lerp + transform path
+        float m11 = m->e11, m12 = m->e12, m13 = m->e13;
+        float m21 = m->e21, m22 = m->e22, m23 = m->e23;
+
+        for (uint32_t i = 0; i < count; ++i) {
+            // Lerp first: p = start + (end - start) * t
+            float px = start[i].x + (end[i].x - start[i].x) * t;
+            float py = start[i].y + (end[i].y - start[i].y) * t;
+
+            // Then transform: out = p * matrix
+            float tx, ty;
+            __asm__ __volatile__(
+                "wfr f0, %2\n"           // f0 = px
+                "wfr f1, %3\n"           // f1 = py
+                "wfr f2, %4\n"           // f2 = m11
+                "wfr f3, %5\n"           // f3 = m12
+                "wfr f4, %6\n"           // f4 = m13
+                "wfr f5, %7\n"           // f5 = m21
+                "wfr f6, %8\n"           // f6 = m22
+                "wfr f7, %9\n"           // f7 = m23
+                "mul.s f8, f0, f2\n"     // f8 = px * m11
+                "madd.s f8, f1, f3\n"    // f8 += py * m12
+                "add.s f8, f8, f4\n"     // f8 += m13
+                "mul.s f9, f0, f5\n"     // f9 = px * m21
+                "madd.s f9, f1, f6\n"    // f9 += py * m22
+                "add.s f9, f9, f7\n"     // f9 += m23
+                "rfr %0, f8\n"
+                "rfr %1, f9\n"
+                : "=r"(tx), "=r"(ty)
+                : "r"(px), "r"(py), "r"(m11), "r"(m12), "r"(m13),
+                  "r"(m21), "r"(m22), "r"(m23)
+                : "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"
+            );
+            out[i].x = tx;
+            out[i].y = ty;
+        }
+    } else {
+        // Lerp only path (no transform)
+        for (uint32_t i = 0; i < count; ++i) {
+            out[i].x = start[i].x + (end[i].x - start[i].x) * t;
+            out[i].y = start[i].y + (end[i].y - start[i].y) * t;
+        }
     }
 }
 
@@ -309,7 +442,7 @@ Bezier::Bezier(const Point& st, const Point& ed, float radius)
 
     // Calculate the control points of the cubic bezier curve
     auto c = radius * PATH_KAPPA;  // c = radius * (4/3) * tan(pi/8)
- 
+
     start = {st.x, st.y};
     ctrl1 = {st.x + radius * cos(angle), st.y + radius * sin(angle)};
     ctrl2 = {ed.x - c * cos(angle), ed.y - c * sin(angle)};

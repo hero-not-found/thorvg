@@ -562,12 +562,17 @@ struct LottiePathSet : LottieProperty
         auto s = frame->value.pts;
         auto e = (frame + 1)->value.pts;
         auto interpPts = tvg::malloc<Point>(frame->value.ptsCnt * sizeof(Point));
-        auto p = interpPts;
 
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+        // Use fused lerp+transform for better cache efficiency on ESP32
+        lerpTransformPoints(interpPts, s, e, frame->value.ptsCnt, t, transform);
+#else
+        auto p = interpPts;
         for (auto i = 0; i < frame->value.ptsCnt; ++i, ++s, ++e, ++p) {
             *p = tvg::lerp(*s, *e, t);
             if (transform) *p *= *transform;
         }
+#endif
 
         if (modifier) modifier->modifyPath(frame->value.cmds, frame->value.cmdsCnt, interpPts, frame->value.ptsCnt, nullptr, out);
 
@@ -591,12 +596,20 @@ struct LottiePathSet : LottieProperty
         //interpolate 2 frames
         auto s = frame->value.pts;
         auto e = (frame + 1)->value.pts;
+        auto ptsCnt = frame->value.ptsCnt;
 
-        for (auto i = 0; i < frame->value.ptsCnt; ++i, ++s, ++e) {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+        // Reserve space and use fused lerp+transform for better performance
+        out.pts.reserve(out.pts.count + ptsCnt);
+        lerpTransformPoints(out.pts.data + out.pts.count, s, e, ptsCnt, t, transform);
+        out.pts.count += ptsCnt;
+#else
+        for (auto i = 0; i < ptsCnt; ++i, ++s, ++e) {
             auto pt = tvg::lerp(*s, *e, t);
             if (transform) pt *= *transform;
             out.pts.push(pt);
         }
+#endif
         _copy(&frame->value, out.cmds);
         return true;
     }

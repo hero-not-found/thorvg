@@ -25,6 +25,106 @@
 #include "tvgSwCommon.h"
 
 /************************************************************************/
+/* ThorVG Profiling for ESP32                                           */
+/************************************************************************/
+
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+#define TVG_RASTER_PROFILE_ENABLED 1
+
+#if TVG_RASTER_PROFILE_ENABLED
+
+static inline uint32_t _raster_get_ccount(void) {
+    uint32_t ccount;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(ccount));
+    return ccount;
+}
+
+// Cycle counters for DRAW phase rasterization (@ 240MHz)
+static uint32_t g_raster_rect_cycles = 0;
+static uint32_t g_raster_rle_cycles = 0;
+static uint32_t g_raster_grad_rect_cycles = 0;
+static uint32_t g_raster_grad_rle_cycles = 0;
+static uint32_t g_raster_image_cycles = 0;
+
+// Operation counts
+static uint32_t g_raster_rect_count = 0;
+static uint32_t g_raster_rle_count = 0;
+static uint32_t g_raster_grad_rect_count = 0;
+static uint32_t g_raster_grad_rle_count = 0;
+static uint32_t g_raster_image_count = 0;
+
+// Aliases for existing code using old naming convention
+#define g_tvg_rect_time_us g_raster_rect_cycles
+#define g_tvg_rect_count g_raster_rect_count
+#define g_tvg_rle_time_us g_raster_rle_cycles
+#define g_tvg_rle_count g_raster_rle_count
+#define g_tvg_gradient_rect_time_us g_raster_grad_rect_cycles
+#define g_tvg_gradient_rect_count g_raster_grad_rect_count
+#define g_tvg_gradient_rle_time_us g_raster_grad_rle_cycles
+#define g_tvg_gradient_rle_count g_raster_grad_rle_count
+#define g_tvg_image_time_us g_raster_image_cycles
+#define g_tvg_image_count g_raster_image_count
+
+static uint32_t _raster_profile_start;
+#define TVG_RASTER_PROFILE_START() _raster_profile_start = _raster_get_ccount()
+#define TVG_RASTER_PROFILE_END(cycles, count) do { \
+    cycles += _raster_get_ccount() - _raster_profile_start; \
+    count++; \
+} while(0)
+
+// Backward compatible aliases for existing profiling calls
+#define TVG_PROFILE_START() TVG_RASTER_PROFILE_START()
+#define TVG_PROFILE_END(cycles, count) TVG_RASTER_PROFILE_END(cycles, count)
+
+// Get stats - caller provides array of 10 uint32_t
+// [0]=rect_us, [1]=rect_count, [2]=rle_us, [3]=rle_count,
+// [4]=grad_rect_us, [5]=grad_rect_count, [6]=grad_rle_us, [7]=grad_rle_count,
+// [8]=image_us, [9]=image_count
+extern "C" void tvg_profile_get_stats(uint32_t* stats) {
+    stats[0] = g_raster_rect_cycles / 240;      // us
+    stats[1] = g_raster_rect_count;
+    stats[2] = g_raster_rle_cycles / 240;       // us
+    stats[3] = g_raster_rle_count;
+    stats[4] = g_raster_grad_rect_cycles / 240; // us
+    stats[5] = g_raster_grad_rect_count;
+    stats[6] = g_raster_grad_rle_cycles / 240;  // us
+    stats[7] = g_raster_grad_rle_count;
+    stats[8] = g_raster_image_cycles / 240;     // us
+    stats[9] = g_raster_image_count;
+}
+
+extern "C" void tvg_profile_reset(void) {
+    g_raster_rect_cycles = 0;
+    g_raster_rle_cycles = 0;
+    g_raster_grad_rect_cycles = 0;
+    g_raster_grad_rle_cycles = 0;
+    g_raster_image_cycles = 0;
+    g_raster_rect_count = 0;
+    g_raster_rle_count = 0;
+    g_raster_grad_rect_count = 0;
+    g_raster_grad_rle_count = 0;
+    g_raster_image_count = 0;
+}
+#else
+#define TVG_RASTER_PROFILE_START()
+#define TVG_RASTER_PROFILE_END(a, b)
+#define TVG_PROFILE_START()
+#define TVG_PROFILE_END(a, b)
+extern "C" void tvg_profile_get_stats(uint32_t* stats) { (void)stats; }
+extern "C" void tvg_profile_reset(void) {}
+#endif
+
+#else
+// Non-ESP32 builds
+#define TVG_RASTER_PROFILE_START()
+#define TVG_RASTER_PROFILE_END(a, b)
+#define TVG_PROFILE_START()
+#define TVG_PROFILE_END(a, b)
+extern "C" void tvg_profile_get_stats(uint32_t* stats) { (void)stats; }
+extern "C" void tvg_profile_reset(void) {}
+#endif
+
+/************************************************************************/
 /* Internal Class Implementation                                        */
 /************************************************************************/
 
@@ -224,8 +324,18 @@ static inline SwMask _getMaskOp(MaskMethod method)
 }
 
 
+#include "tvgSwRasterTexmap.h"
+#include "tvgSwRasterC.h"
+#include "tvgSwRasterAvx.h"
+#include "tvgSwRasterNeon.h"
+#include "tvgSwRasterEsp32.h"
+
+
 static bool _compositeMaskImage(SwSurface* surface, const SwImage& image, const RenderRegion& bbox)
 {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+    return esp32CompositeMaskImage(surface, image, bbox);
+#else
     auto dbuffer = &surface->buf8[bbox.min.y * surface->stride + bbox.min.x];
     auto sbuffer = image.buf8 + (bbox.min.y + image.oy) * image.stride + (bbox.min.x + image.ox);
 
@@ -239,13 +349,8 @@ static bool _compositeMaskImage(SwSurface* surface, const SwImage& image, const 
         sbuffer += image.stride;
     }
     return true;
+#endif
 }
-
-
-#include "tvgSwRasterTexmap.h"
-#include "tvgSwRasterC.h"
-#include "tvgSwRasterAvx.h"
-#include "tvgSwRasterNeon.h"
 
 
 static inline uint32_t _sampleSize(float scale)
@@ -429,6 +534,8 @@ static bool _rasterTranslucentRect(SwSurface* surface, const RenderRegion& bbox,
     return avxRasterTranslucentRect(surface, bbox, c);
 #elif defined(THORVG_NEON_VECTOR_SUPPORT)
     return neonRasterTranslucentRect(surface, bbox, c);
+#elif defined(THORVG_ESP32_VECTOR_SUPPORT)
+    return esp32RasterTranslucentRect(surface, bbox, c);
 #else
     return cRasterTranslucentRect(surface, bbox, c);
 #endif
@@ -459,16 +566,23 @@ static bool _rasterSolidRect(SwSurface* surface, const RenderRegion& bbox, const
 
 static bool _rasterRect(SwSurface* surface, const RenderRegion& bbox, const RenderColor& c)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterMattedRect(surface, bbox, c);
-        else return _rasterMaskedRect(surface, bbox, c);
+        if (_matting(surface)) result = _rasterMattedRect(surface, bbox, c);
+        else result = _rasterMaskedRect(surface, bbox, c);
     } else if (_blending(surface)) {
-        return _rasterBlendingRect(surface, bbox, c);
+        result = _rasterBlendingRect(surface, bbox, c);
     } else {
-        if (c.a == 255) return _rasterSolidRect(surface, bbox, c);
-        else return _rasterTranslucentRect(surface, bbox, c);
+        if (c.a == 255) result = _rasterSolidRect(surface, bbox, c);
+        else result = _rasterTranslucentRect(surface, bbox, c);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_rect_time_us, g_tvg_rect_count);
+#endif
+    return result;
 }
 
 
@@ -609,6 +723,8 @@ static bool _rasterTranslucentRle(SwSurface* surface, const SwRle* rle, const Re
     return avxRasterTranslucentRle(surface, rle, bbox, c);
 #elif defined(THORVG_NEON_VECTOR_SUPPORT)
     return neonRasterTranslucentRle(surface, rle, bbox, c);
+#elif defined(THORVG_ESP32_VECTOR_SUPPORT)
+    return esp32RasterTranslucentRle(surface, rle, bbox, c);
 #else
     return cRasterTranslucentRle(surface, rle, bbox, c);
 #endif
@@ -617,6 +733,9 @@ static bool _rasterTranslucentRle(SwSurface* surface, const SwRle* rle, const Re
 
 static bool _rasterSolidRle(SwSurface* surface, const SwRle* rle, const RenderRegion& bbox, const RenderColor& c)
 {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+    return esp32RasterSolidRle(surface, rle, bbox, c);
+#else
     const SwSpan* end;
     int32_t x, len;
 
@@ -650,6 +769,7 @@ static bool _rasterSolidRle(SwSurface* surface, const SwRle* rle, const RenderRe
         }
     }
     return true;
+#endif
 }
 
 
@@ -657,16 +777,23 @@ static bool _rasterRle(SwSurface* surface, SwRle* rle, const RenderRegion& bbox,
 {
     if (!rle || rle->invalid()) return false;
 
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterMattedRle(surface, rle, bbox, c);
-        else return _rasterMaskedRle(surface, rle, bbox, c);
+        if (_matting(surface)) result = _rasterMattedRle(surface, rle, bbox, c);
+        else result = _rasterMaskedRle(surface, rle, bbox, c);
     } else if (_blending(surface)) {
-        return _rasterBlendingRle(surface, rle, bbox, c);
+        result = _rasterBlendingRle(surface, rle, bbox, c);
     } else {
-        if (c.a == 255) return _rasterSolidRle(surface, rle, bbox, c);
-        else return _rasterTranslucentRle(surface, rle, bbox, c);
+        if (c.a == 255) result = _rasterSolidRle(surface, rle, bbox, c);
+        else result = _rasterTranslucentRle(surface, rle, bbox, c);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_rle_time_us, g_tvg_rle_count);
+#endif
+    return result;
 }
 
 
@@ -1243,31 +1370,45 @@ static bool _rasterSolidGradientRect(SwSurface* surface, const RenderRegion& bbo
 
 static bool _rasterLinearGradientRect(SwSurface* surface, const RenderRegion& bbox, const SwFill* fill)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result = false;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterGradientMattedRect<FillLinear>(surface, bbox, fill);
-        else return _rasterGradientMaskedRect<FillLinear>(surface, bbox, fill);
+        if (_matting(surface)) result = _rasterGradientMattedRect<FillLinear>(surface, bbox, fill);
+        else result = _rasterGradientMaskedRect<FillLinear>(surface, bbox, fill);
     } else if (_blending(surface)) {
-        return _rasterBlendingGradientRect<FillLinear>(surface, bbox, fill);
+        result = _rasterBlendingGradientRect<FillLinear>(surface, bbox, fill);
     } else {
-        if (fill->translucent) return _rasterTranslucentGradientRect<FillLinear>(surface, bbox, fill);
-        else _rasterSolidGradientRect<FillLinear>(surface, bbox, fill);
+        if (fill->translucent) result = _rasterTranslucentGradientRect<FillLinear>(surface, bbox, fill);
+        else result = _rasterSolidGradientRect<FillLinear>(surface, bbox, fill);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_gradient_rect_time_us, g_tvg_gradient_rect_count);
+#endif
+    return result;
 }
 
 
 static bool _rasterRadialGradientRect(SwSurface* surface, const RenderRegion& bbox, const SwFill* fill)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result = false;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterGradientMattedRect<FillRadial>(surface, bbox, fill);
-        else return _rasterGradientMaskedRect<FillRadial>(surface, bbox, fill);
+        if (_matting(surface)) result = _rasterGradientMattedRect<FillRadial>(surface, bbox, fill);
+        else result = _rasterGradientMaskedRect<FillRadial>(surface, bbox, fill);
     } else if (_blending(surface)) {
-        return _rasterBlendingGradientRect<FillRadial>(surface, bbox, fill);
+        result = _rasterBlendingGradientRect<FillRadial>(surface, bbox, fill);
     } else {
-        if (fill->translucent) return _rasterTranslucentGradientRect<FillRadial>(surface, bbox, fill);
-        else _rasterSolidGradientRect<FillRadial>(surface, bbox, fill);
+        if (fill->translucent) result = _rasterTranslucentGradientRect<FillRadial>(surface, bbox, fill);
+        else result = _rasterSolidGradientRect<FillRadial>(surface, bbox, fill);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_gradient_rect_time_us, g_tvg_gradient_rect_count);
+#endif
+    return result;
 }
 
 
@@ -1404,31 +1545,45 @@ static bool _rasterSolidGradientRle(SwSurface* surface, const SwRle* rle, const 
 
 static bool _rasterLinearGradientRle(SwSurface* surface, const SwRle* rle, const SwFill* fill)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result = false;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterGradientMattedRle<FillLinear>(surface, rle, fill);
-        else return _rasterGradientMaskedRle<FillLinear>(surface, rle, fill);
+        if (_matting(surface)) result = _rasterGradientMattedRle<FillLinear>(surface, rle, fill);
+        else result = _rasterGradientMaskedRle<FillLinear>(surface, rle, fill);
     } else if (_blending(surface)) {
-        return _rasterBlendingGradientRle<FillLinear>(surface, rle, fill);
+        result = _rasterBlendingGradientRle<FillLinear>(surface, rle, fill);
     } else {
-        if (fill->translucent) return _rasterTranslucentGradientRle<FillLinear>(surface, rle, fill);
-        else return _rasterSolidGradientRle<FillLinear>(surface, rle, fill);
+        if (fill->translucent) result = _rasterTranslucentGradientRle<FillLinear>(surface, rle, fill);
+        else result = _rasterSolidGradientRle<FillLinear>(surface, rle, fill);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_gradient_rle_time_us, g_tvg_gradient_rle_count);
+#endif
+    return result;
 }
 
 
 static bool _rasterRadialGradientRle(SwSurface* surface, const SwRle* rle, const SwFill* fill)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result = false;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterGradientMattedRle<FillRadial>(surface, rle, fill);
-        else return _rasterGradientMaskedRle<FillRadial>(surface, rle, fill);
+        if (_matting(surface)) result = _rasterGradientMattedRle<FillRadial>(surface, rle, fill);
+        else result = _rasterGradientMaskedRle<FillRadial>(surface, rle, fill);
     } else if (_blending(surface)) {
-        return _rasterBlendingGradientRle<FillRadial>(surface, rle, fill);
+        result = _rasterBlendingGradientRle<FillRadial>(surface, rle, fill);
     } else {
-        if (fill->translucent) return _rasterTranslucentGradientRle<FillRadial>(surface, rle, fill);
-        else return _rasterSolidGradientRle<FillRadial>(surface, rle, fill);
+        if (fill->translucent) result = _rasterTranslucentGradientRle<FillRadial>(surface, rle, fill);
+        else result = _rasterSolidGradientRle<FillRadial>(surface, rle, fill);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_gradient_rle_time_us, g_tvg_gradient_rle_count);
+#endif
+    return result;
 }
 
 
@@ -1438,15 +1593,21 @@ static bool _rasterRadialGradientRle(SwSurface* surface, const SwRle* rle, const
 
 void rasterTranslucentPixel32(uint32_t* dst, uint32_t* src, uint32_t len, uint8_t opacity)
 {
-    //TODO: Support SIMD accelerations
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+    esp32RasterTranslucentPixels(dst, src, len, opacity);
+#else
     cRasterTranslucentPixels(dst, src, len, opacity);
+#endif
 }
 
 
 void rasterPixel32(uint32_t* dst, uint32_t* src, uint32_t len, uint8_t opacity)
 {
-    //TODO: Support SIMD accelerations
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+    esp32RasterPixels(dst, src, len, opacity);
+#else
     cRasterPixels(dst, src, len, opacity);
+#endif
 }
 
 
@@ -1456,6 +1617,8 @@ void rasterGrayscale8(uint8_t *dst, uint8_t val, uint32_t offset, int32_t len)
     avxRasterGrayscale8(dst, val, offset, len);
 #elif defined(THORVG_NEON_VECTOR_SUPPORT)
     neonRasterGrayscale8(dst, val, offset, len);
+#elif defined(THORVG_ESP32_VECTOR_SUPPORT)
+    esp32RasterGrayscale8(dst, val, offset, len);
 #else
     cRasterPixels(dst, val, offset, len);
 #endif
@@ -1468,6 +1631,8 @@ void rasterPixel32(uint32_t *dst, uint32_t val, uint32_t offset, int32_t len)
     avxRasterPixel32(dst, val, offset, len);
 #elif defined(THORVG_NEON_VECTOR_SUPPORT)
     neonRasterPixel32(dst, val, offset, len);
+#elif defined(THORVG_ESP32_VECTOR_SUPPORT)
+    esp32RasterPixel32(dst, val, offset, len);
 #else
     cRasterPixels(dst, val, offset, len);
 #endif
@@ -1547,13 +1712,16 @@ void rasterUnpremultiply(RenderSurface* surface)
 
     TVGLOG("SW_ENGINE", "Unpremultiply [Size: %d x %d]", surface->w, surface->h);
 
-    //OPTIMIZE_ME: +SIMD
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+    esp32RasterUnpremultiply(surface);
+#else
     for (uint32_t y = 0; y < surface->h; y++) {
         auto buffer = surface->buf32 + surface->stride * y;
         for (uint32_t x = 0; x < surface->w; ++x) {
             buffer[x] = rasterUnpremultiply(buffer[x]);
         }
     }
+#endif
     surface->premultiplied = false;
 }
 
@@ -1566,7 +1734,9 @@ void rasterPremultiply(RenderSurface* surface)
 
     TVGLOG("SW_ENGINE", "Premultiply [Size: %d x %d]", surface->w, surface->h);
 
-    //OPTIMIZE_ME: +SIMD
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+    esp32RasterPremultiply(surface);
+#else
     auto buffer = surface->buf32;
     for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride) {
         auto dst = buffer;
@@ -1576,44 +1746,60 @@ void rasterPremultiply(RenderSurface* surface)
             *dst = PREMULTIPLY(c, A(c));
         }
     }
+#endif
 }
 
 
 bool rasterScaledImage(SwSurface* surface, const SwImage& image, const Matrix& transform, const RenderRegion& bbox, uint8_t opacity)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
     Matrix itransform;
+    bool result = false;
 
-    if (!inverse(&transform, &itransform)) return true;
+    if (!inverse(&transform, &itransform)) { result = true; goto done; }
 
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterScaledMattedImage(surface, image, &itransform, bbox, opacity);
-        else return _rasterScaledMaskedImage(surface, image, &itransform, bbox, opacity);
+        if (_matting(surface)) result = _rasterScaledMattedImage(surface, image, &itransform, bbox, opacity);
+        else result = _rasterScaledMaskedImage(surface, image, &itransform, bbox, opacity);
     } else if (_blending(surface)) {
-        return _rasterScaledBlendingImage(surface, image, &itransform, bbox, opacity);
+        result = _rasterScaledBlendingImage(surface, image, &itransform, bbox, opacity);
     } else {
-        return _rasterScaledImage(surface, image, &itransform, bbox, opacity);
+        result = _rasterScaledImage(surface, image, &itransform, bbox, opacity);
     }
-    return false;
+done:
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_image_time_us, g_tvg_image_count);
+#endif
+    return result;
 }
 
 
 bool rasterDirectImage(SwSurface* surface, const SwImage& image, const RenderRegion& bbox, uint8_t opacity)
 {
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
     //calculate an actual drawing image size
     auto w = std::min(bbox.max.x - bbox.min.x, int32_t(image.w) - (bbox.min.x + image.ox));
     auto h = std::min(bbox.max.y - bbox.min.y, int32_t(image.h) - (bbox.min.y + image.oy));
+    bool result = false;
 
     if (_compositing(surface)) {
         if (_matting(surface)) {
-            if (_blending(surface)) return _rasterDirectMattedBlendingImage(surface, image, bbox, w, h, opacity);
-            else return _rasterDirectMattedImage(surface, image, bbox, w, h, opacity);
-        } else return _rasterDirectMaskedImage(surface, image, bbox, w, h, opacity);
+            if (_blending(surface)) result = _rasterDirectMattedBlendingImage(surface, image, bbox, w, h, opacity);
+            else result = _rasterDirectMattedImage(surface, image, bbox, w, h, opacity);
+        } else result = _rasterDirectMaskedImage(surface, image, bbox, w, h, opacity);
     } else if (_blending(surface)) {
-        return _rasterDirectBlendingImage(surface, image, bbox, w, h, opacity);
+        result = _rasterDirectBlendingImage(surface, image, bbox, w, h, opacity);
     } else {
-        return _rasterDirectImage(surface, image, bbox, w, h, opacity);
+        result = _rasterDirectImage(surface, image, bbox, w, h, opacity);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_image_time_us, g_tvg_image_count);
+#endif
+    return result;
 }
 
 
@@ -1624,19 +1810,27 @@ bool rasterScaledRleImage(SwSurface* surface, const SwImage& image, const Matrix
         return false;
     }
 
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
     Matrix itransform;
+    bool result = false;
 
-    if (!inverse(&transform, &itransform)) return true;
+    if (!inverse(&transform, &itransform)) { result = true; goto done; }
 
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterScaledMattedRleImage(surface, image, &itransform, bbox, opacity);
-        else return _rasterScaledMaskedRleImage(surface, image, &itransform, bbox, opacity);
+        if (_matting(surface)) result = _rasterScaledMattedRleImage(surface, image, &itransform, bbox, opacity);
+        else result = _rasterScaledMaskedRleImage(surface, image, &itransform, bbox, opacity);
     } else if (_blending(surface)) {
-        return _rasterScaledBlendingRleImage(surface, image, &itransform, bbox, opacity);
+        result = _rasterScaledBlendingRleImage(surface, image, &itransform, bbox, opacity);
     } else {
-        return _rasterScaledRleImage(surface, image, &itransform, bbox, opacity);
+        result = _rasterScaledRleImage(surface, image, &itransform, bbox, opacity);
     }
-    return false;
+done:
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_image_time_us, g_tvg_image_count);
+#endif
+    return result;
 }
 
 
@@ -1647,15 +1841,22 @@ bool rasterDirectRleImage(SwSurface* surface, const SwImage& image, const Render
         return false;
     }
 
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_START();
+#endif
+    bool result = false;
     if (_compositing(surface)) {
-        if (_matting(surface)) return _rasterDirectMattedRleImage(surface, image, bbox, opacity);
-        else return _rasterDirectMaskedRleImage(surface, image, bbox, opacity);
+        if (_matting(surface)) result = _rasterDirectMattedRleImage(surface, image, bbox, opacity);
+        else result = _rasterDirectMaskedRleImage(surface, image, bbox, opacity);
     } else if (_blending(surface)) {
-        return _rasterDirectBlendingRleImage(surface, image, bbox, opacity);
+        result = _rasterDirectBlendingRleImage(surface, image, bbox, opacity);
     } else {
-        return _rasterDirectRleImage(surface, image, bbox, opacity);
+        result = _rasterDirectRleImage(surface, image, bbox, opacity);
     }
-    return false;
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+    TVG_PROFILE_END(g_tvg_image_time_us, g_tvg_image_count);
+#endif
+    return result;
 }
 
 
@@ -1669,14 +1870,16 @@ bool rasterGradientShape(SwSurface* surface, SwShape* shape, const RenderRegion&
         return a > 0 ? rasterShape(surface, shape, bbox, c) : true;
     }
 
+    // Profiling happens inside _rasterLinearGradientRect/Rle etc.
     auto type = fdata->type();
     if (shape->fastTrack) {
         if (type == Type::LinearGradient) return _rasterLinearGradientRect(surface, bbox, shape->fill);
-        else if (type == Type::RadialGradient)return _rasterRadialGradientRect(surface, bbox, shape->fill);
+        else if (type == Type::RadialGradient) return _rasterRadialGradientRect(surface, bbox, shape->fill);
     } else if (shape->rle && shape->rle->valid()) {
         if (type == Type::LinearGradient) return _rasterLinearGradientRle(surface, shape->rle, shape->fill);
         else if (type == Type::RadialGradient) return _rasterRadialGradientRle(surface, shape->rle, shape->fill);
-    } return false;
+    }
+    return false;
 }
 
 
@@ -1690,6 +1893,7 @@ bool rasterGradientStroke(SwSurface* surface, SwShape* shape, const RenderRegion
         return c.a > 0 ? rasterStroke(surface, shape, bbox, c) : true;
     }
 
+    // Profiling happens inside _rasterLinearGradientRle etc.
     auto type = fdata->type();
     if (type == Type::LinearGradient) return _rasterLinearGradientRle(surface, shape->strokeRle, shape->stroke->fill);
     else if (type == Type::RadialGradient) return _rasterRadialGradientRle(surface, shape->strokeRle, shape->stroke->fill);
@@ -1704,6 +1908,7 @@ bool rasterShape(SwSurface* surface, SwShape* shape, const RenderRegion& bbox, R
         c.g = MULTIPLY(c.g, c.a);
         c.b = MULTIPLY(c.b, c.a);
     }
+    // Profiling happens inside _rasterRect/_rasterRle
     if (shape->fastTrack) return _rasterRect(surface, bbox, c);
     else return _rasterRle(surface, shape->rle, bbox, c);
 }
@@ -1716,7 +1921,7 @@ bool rasterStroke(SwSurface* surface, SwShape* shape, const RenderRegion& bbox, 
         c.g = MULTIPLY(c.g, c.a);
         c.b = MULTIPLY(c.b, c.a);
     }
-
+    // Profiling happens inside _rasterRle
     return _rasterRle(surface, shape->strokeRle, bbox, c);
 }
 
@@ -1726,16 +1931,23 @@ bool rasterConvertCS(RenderSurface* surface, ColorSpace to)
     ScopedLock lock(surface->key);
     if (surface->cs == to) return true;
 
-    //TODO: Support SIMD accelerations
     auto from = surface->cs;
 
     if (((from == ColorSpace::ABGR8888) || (from == ColorSpace::ABGR8888S)) && ((to == ColorSpace::ARGB8888) || (to == ColorSpace::ARGB8888S))) {
         surface->cs = to;
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+        return esp32RasterABGRtoARGB(surface);
+#else
         return cRasterABGRtoARGB(surface);
+#endif
     }
     if (((from == ColorSpace::ARGB8888) || (from == ColorSpace::ARGB8888S)) && ((to == ColorSpace::ABGR8888) || (to == ColorSpace::ABGR8888S))) {
         surface->cs = to;
+#if defined(THORVG_ESP32_VECTOR_SUPPORT)
+        return esp32RasterARGBtoABGR(surface);
+#else
         return cRasterARGBtoABGR(surface);
+#endif
     }
     return false;
 }

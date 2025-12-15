@@ -210,6 +210,8 @@ void operator*=(Point& pt, const Matrix& m);
 Point operator*(const Point& pt, const Matrix& m);
 Point normal(const Point& p1, const Point& p2);
 void normalize(Point& pt);
+void transformPoints(Point* pts, uint32_t count, const Matrix& m);  // Batch transform
+void lerpTransformPoints(Point* out, const Point* start, const Point* end, uint32_t count, float t, const Matrix* m);  // Fused lerp+transform
 
 static inline constexpr const Point operator*=(Point& pt, const Matrix* m)
 {

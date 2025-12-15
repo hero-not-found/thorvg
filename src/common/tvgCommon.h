@@ -75,14 +75,20 @@ namespace tvg {
     enum class FileType { Png = 0, Jpg, Webp, Svg, Lot, Ttf, Raw, Gif, Unknown };
 
     #ifdef THORVG_LOG_ENABLED
-        constexpr auto ErrorColor = "\033[31m";  //red
-        constexpr auto ErrorBgColor = "\033[41m";//bg red
-        constexpr auto LogColor = "\033[32m";    //green
-        constexpr auto LogBgColor = "\033[42m";  //bg green
-        constexpr auto GreyColor = "\033[90m";   //grey
-        constexpr auto ResetColors = "\033[0m";  //default
-        #define TVGERR(tag, fmt, ...) fprintf(stderr, "%s[E]%s %s" tag "%s (%s %d): %s" fmt "\n", ErrorBgColor, ResetColors, ErrorColor, GreyColor, __FILE__, __LINE__, ResetColors, ##__VA_ARGS__)
-        #define TVGLOG(tag, fmt, ...) fprintf(stdout, "%s[L]%s %s" tag "%s (%s %d): %s" fmt "\n", LogBgColor, ResetColors, LogColor, GreyColor, __FILE__, __LINE__, ResetColors, ##__VA_ARGS__)
+        #ifdef THORVG_ESP32_VECTOR_SUPPORT
+            // ESP32: simple printf (routed to UART by ESP-IDF)
+            #define TVGERR(tag, fmt, ...) printf("[E] " tag ": " fmt "\n", ##__VA_ARGS__)
+            #define TVGLOG(tag, fmt, ...) printf("[L] " tag ": " fmt "\n", ##__VA_ARGS__)
+        #else
+            constexpr auto ErrorColor = "\033[31m";  //red
+            constexpr auto ErrorBgColor = "\033[41m";//bg red
+            constexpr auto LogColor = "\033[32m";    //green
+            constexpr auto LogBgColor = "\033[42m";  //bg green
+            constexpr auto GreyColor = "\033[90m";   //grey
+            constexpr auto ResetColors = "\033[0m";  //default
+            #define TVGERR(tag, fmt, ...) fprintf(stderr, "%s[E]%s %s" tag "%s (%s %d): %s" fmt "\n", ErrorBgColor, ResetColors, ErrorColor, GreyColor, __FILE__, __LINE__, ResetColors, ##__VA_ARGS__)
+            #define TVGLOG(tag, fmt, ...) fprintf(stdout, "%s[L]%s %s" tag "%s (%s %d): %s" fmt "\n", LogBgColor, ResetColors, LogColor, GreyColor, __FILE__, __LINE__, ResetColors, ##__VA_ARGS__)
+        #endif
     #else
         #define TVGERR(...) do {} while(0)
         #define TVGLOG(...) do {} while(0)

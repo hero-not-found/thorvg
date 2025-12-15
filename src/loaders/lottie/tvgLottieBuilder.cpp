@@ -29,6 +29,104 @@
 #include "tvgLottieBuilder.h"
 #include "tvgLottieExpressions.h"
 
+/************************************************************************/
+/* Lottie Builder Profiling                                             */
+/************************************************************************/
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+#define TVG_LOTTIE_PROFILE_ENABLED 1
+
+#if TVG_LOTTIE_PROFILE_ENABLED
+
+static inline uint32_t _lottie_get_ccount(void) {
+    uint32_t ccount;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(ccount));
+    return ccount;
+}
+
+// Timing accumulators (CPU cycles @ 240MHz)
+static uint32_t g_lottie_update_total_cycles = 0;
+static uint32_t g_lottie_update_layer_cycles = 0;
+static uint32_t g_lottie_update_transform_cycles = 0;
+static uint32_t g_lottie_update_children_cycles = 0;
+static uint32_t g_lottie_update_path_cycles = 0;
+static uint32_t g_lottie_update_count = 0;
+static uint32_t g_lottie_layer_count = 0;
+static uint32_t g_lottie_path_count = 0;
+
+// Shape type breakdown
+static uint32_t g_lottie_update_group_cycles = 0;
+static uint32_t g_lottie_update_fill_cycles = 0;
+static uint32_t g_lottie_update_stroke_cycles = 0;
+static uint32_t g_lottie_update_rect_cycles = 0;
+static uint32_t g_lottie_update_ellipse_cycles = 0;
+static uint32_t g_lottie_group_count = 0;
+static uint32_t g_lottie_fill_count = 0;
+static uint32_t g_lottie_stroke_count = 0;
+static uint32_t g_lottie_rect_count = 0;
+static uint32_t g_lottie_ellipse_count = 0;
+
+static uint32_t _lottie_profile_start;
+#define TVG_LOTTIE_PROFILE_START() _lottie_profile_start = _lottie_get_ccount()
+#define TVG_LOTTIE_PROFILE_END(cycles) cycles += _lottie_get_ccount() - _lottie_profile_start
+
+// Get stats: [0]=total_us, [1]=layer_us, [2]=transform_us, [3]=children_us, [4]=path_us
+//            [5]=update_count, [6]=layer_count, [7]=path_count
+//            [8]=group_us, [9]=fill_us, [10]=stroke_us, [11]=rect_us, [12]=ellipse_us
+//            [13]=group_cnt, [14]=fill_cnt, [15]=stroke_cnt, [16]=rect_cnt, [17]=ellipse_cnt
+extern "C" void tvg_lottie_profile_get_stats(uint32_t* stats) {
+    stats[0] = g_lottie_update_total_cycles / 240;
+    stats[1] = g_lottie_update_layer_cycles / 240;
+    stats[2] = g_lottie_update_transform_cycles / 240;
+    stats[3] = g_lottie_update_children_cycles / 240;
+    stats[4] = g_lottie_update_path_cycles / 240;
+    stats[5] = g_lottie_update_count;
+    stats[6] = g_lottie_layer_count;
+    stats[7] = g_lottie_path_count;
+    stats[8] = g_lottie_update_group_cycles / 240;
+    stats[9] = g_lottie_update_fill_cycles / 240;
+    stats[10] = g_lottie_update_stroke_cycles / 240;
+    stats[11] = g_lottie_update_rect_cycles / 240;
+    stats[12] = g_lottie_update_ellipse_cycles / 240;
+    stats[13] = g_lottie_group_count;
+    stats[14] = g_lottie_fill_count;
+    stats[15] = g_lottie_stroke_count;
+    stats[16] = g_lottie_rect_count;
+    stats[17] = g_lottie_ellipse_count;
+}
+
+extern "C" void tvg_lottie_profile_reset(void) {
+    g_lottie_update_total_cycles = 0;
+    g_lottie_update_layer_cycles = 0;
+    g_lottie_update_transform_cycles = 0;
+    g_lottie_update_children_cycles = 0;
+    g_lottie_update_path_cycles = 0;
+    g_lottie_update_count = 0;
+    g_lottie_layer_count = 0;
+    g_lottie_path_count = 0;
+    g_lottie_update_group_cycles = 0;
+    g_lottie_update_fill_cycles = 0;
+    g_lottie_update_stroke_cycles = 0;
+    g_lottie_update_rect_cycles = 0;
+    g_lottie_update_ellipse_cycles = 0;
+    g_lottie_group_count = 0;
+    g_lottie_fill_count = 0;
+    g_lottie_stroke_count = 0;
+    g_lottie_rect_count = 0;
+    g_lottie_ellipse_count = 0;
+}
+
+#else
+#define TVG_LOTTIE_PROFILE_START()
+#define TVG_LOTTIE_PROFILE_END(cycles)
+extern "C" void tvg_lottie_profile_get_stats(uint32_t* stats) { for(int i=0;i<18;i++) stats[i]=0; }
+extern "C" void tvg_lottie_profile_reset(void) {}
+#endif
+
+#else
+// Non-ESP32 stubs
+extern "C" void tvg_lottie_profile_get_stats(uint32_t* stats) { for(int i=0;i<18;i++) stats[i]=0; }
+extern "C" void tvg_lottie_profile_reset(void) {}
+#endif
 
 /************************************************************************/
 /* Internal Class Implementation                                        */
@@ -141,7 +239,15 @@ static bool _update(LottieTransform* transform, float frameNo, Matrix& matrix, u
 
 void LottieBuilder::updateTransform(LottieLayer* layer, float frameNo)
 {
-    if (!layer || (!tweening() && tvg::equal(layer->cache.frameNo, frameNo))) return;
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    TVG_LOTTIE_PROFILE_START();
+#endif
+    if (!layer || (!tweening() && tvg::equal(layer->cache.frameNo, frameNo))) {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+        TVG_LOTTIE_PROFILE_END(g_lottie_update_transform_cycles);
+#endif
+        return;
+    }
 
     auto transform = layer->transform;
     auto parent = layer->parent;
@@ -155,6 +261,9 @@ void LottieBuilder::updateTransform(LottieLayer* layer, float frameNo)
     if (parent) layer->cache.matrix = parent->cache.matrix * matrix;
 
     layer->cache.frameNo = frameNo;
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    TVG_LOTTIE_PROFILE_END(g_lottie_update_transform_cycles);
+#endif
 }
 
 
@@ -410,9 +519,8 @@ void LottieBuilder::appendRect(Shape* shape, Point& pos, Point& size, float r, b
     temp->appendRect(pos.x, pos.y, size.x, size.y, r, r, clockwise);
 
     if (ctx->transform) {
-        for (auto i = cnt; i < to<ShapeImpl>(temp)->rs.path.pts.count; ++i) {
-            to<ShapeImpl>(temp)->rs.path.pts[i] *= *ctx->transform;
-        }
+        auto& pts = to<ShapeImpl>(temp)->rs.path.pts;
+        transformPoints(pts.data + cnt, pts.count - cnt, *ctx->transform);
     }
 
     if (ctx->offset) {
@@ -456,9 +564,8 @@ static void _appendCircle(Shape* shape, Point& center, Point& radius, bool clock
     shape->appendCircle(center.x, center.y, radius.x, radius.y, clockwise);
 
     if (ctx->transform) {
-        for (auto i = cnt; i < to<ShapeImpl>(shape)->rs.path.pts.count; ++i) {
-            to<ShapeImpl>(shape)->rs.path.pts[i] *= *ctx->transform;
-        }
+        auto& pts = to<ShapeImpl>(shape)->rs.path.pts;
+        transformPoints(pts.data + cnt, pts.count - cnt, *ctx->transform);
     }
 }
 
@@ -483,6 +590,9 @@ void LottieBuilder::updateEllipse(LottieGroup* parent, LottieObject** child, flo
 
 void LottieBuilder::updatePath(LottieGroup* parent, LottieObject** child, float frameNo, TVG_UNUSED Inlist<RenderContext>& contexts, RenderContext* ctx)
 {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    TVG_LOTTIE_PROFILE_START();
+#endif
     auto path = static_cast<LottiePath*>(*child);
 
     if (ctx->repeaters.empty()) {
@@ -496,6 +606,10 @@ void LottieBuilder::updatePath(LottieGroup* parent, LottieObject** child, float 
         path->pathset(frameNo, to<ShapeImpl>(shape)->rs.path, ctx->transform, tween, exps, ctx->modifier);
         _repeat(parent, shape, path, ctx);
     }
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    TVG_LOTTIE_PROFILE_END(g_lottie_update_path_cycles);
+    g_lottie_path_count++;
+#endif
 }
 
 
@@ -785,6 +899,15 @@ void LottieBuilder::updateChildren(LottieGroup* parent, float frameNo, Inlist<Re
 {
     contexts.head->begin = parent->children.end() - 1;
 
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    uint32_t _child_start;
+    #define CHILD_PROFILE_START() _child_start = _lottie_get_ccount()
+    #define CHILD_PROFILE_END(cycles, cnt) do { cycles += _lottie_get_ccount() - _child_start; cnt++; } while(0)
+#else
+    #define CHILD_PROFILE_START()
+    #define CHILD_PROFILE_END(cycles, cnt)
+#endif
+
     while (!contexts.empty()) {
         auto ctx = contexts.front();
         ctx->reqFragment = parent->reqFragment;
@@ -793,7 +916,9 @@ void LottieBuilder::updateChildren(LottieGroup* parent, float frameNo, Inlist<Re
             //Here switch-case statements are more performant than virtual methods.
             switch ((*child)->type) {
                 case LottieObject::Group: {
+                    CHILD_PROFILE_START();
                     updateGroup(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_group_cycles, g_lottie_group_count);
                     break;
                 }
                 case LottieObject::Transform: {
@@ -801,27 +926,39 @@ void LottieBuilder::updateChildren(LottieGroup* parent, float frameNo, Inlist<Re
                     break;
                 }
                 case LottieObject::SolidFill: {
+                    CHILD_PROFILE_START();
                     stop = updateSolidFill(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_fill_cycles, g_lottie_fill_count);
                     break;
                 }
                 case LottieObject::SolidStroke: {
+                    CHILD_PROFILE_START();
                     stop = updateSolidStroke(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_stroke_cycles, g_lottie_stroke_count);
                     break;
                 }
                 case LottieObject::GradientFill: {
+                    CHILD_PROFILE_START();
                     stop = updateGradientFill(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_fill_cycles, g_lottie_fill_count);
                     break;
                 }
                 case LottieObject::GradientStroke: {
+                    CHILD_PROFILE_START();
                     stop = updateGradientStroke(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_stroke_cycles, g_lottie_stroke_count);
                     break;
                 }
                 case LottieObject::Rect: {
+                    CHILD_PROFILE_START();
                     updateRect(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_rect_cycles, g_lottie_rect_count);
                     break;
                 }
                 case LottieObject::Ellipse: {
+                    CHILD_PROFILE_START();
                     updateEllipse(parent, child, frameNo, contexts, ctx);
+                    CHILD_PROFILE_END(g_lottie_update_ellipse_cycles, g_lottie_ellipse_count);
                     break;
                 }
                 case LottieObject::Path: {
@@ -856,6 +993,8 @@ void LottieBuilder::updateChildren(LottieGroup* parent, float frameNo, Inlist<Re
         }
         delete(ctx);
     }
+#undef CHILD_PROFILE_START
+#undef CHILD_PROFILE_END
 }
 
 
@@ -1402,15 +1541,29 @@ void LottieBuilder::updateEffect(LottieLayer* layer, float frameNo, uint8_t qual
 
 void LottieBuilder::updateLayer(LottieComposition* comp, Scene* scene, LottieLayer* layer, float frameNo)
 {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    TVG_LOTTIE_PROFILE_START();
+    g_lottie_layer_count++;
+#endif
     layer->scene = nullptr;
 
     //visibility
-    if (frameNo < layer->inFrame || frameNo >= layer->outFrame) return;
+    if (frameNo < layer->inFrame || frameNo >= layer->outFrame) {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+        TVG_LOTTIE_PROFILE_END(g_lottie_update_layer_cycles);
+#endif
+        return;
+    }
 
     updateTransform(layer, frameNo);
 
     //full transparent scene. no need to perform
-    if (layer->type != LottieLayer::Null && layer->cache.opacity == 0) return;
+    if (layer->type != LottieLayer::Null && layer->cache.opacity == 0) {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+        TVG_LOTTIE_PROFILE_END(g_lottie_update_layer_cycles);
+#endif
+        return;
+    }
 
     //Prepare render data
     layer->scene = Scene::gen();
@@ -1421,7 +1574,12 @@ void LottieBuilder::updateLayer(LottieComposition* comp, Scene* scene, LottieLay
 
     layer->scene->transform(layer->cache.matrix);
 
-    if (!layer->matteSrc && !updateMatte(comp, frameNo, scene, layer)) return;
+    if (!layer->matteSrc && !updateMatte(comp, frameNo, scene, layer)) {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+        TVG_LOTTIE_PROFILE_END(g_lottie_update_layer_cycles);
+#endif
+        return;
+    }
 
     switch (layer->type) {
         case LottieLayer::Precomp: {
@@ -1445,7 +1603,13 @@ void LottieBuilder::updateLayer(LottieComposition* comp, Scene* scene, LottieLay
             if (!layer->children.empty()) {
                 Inlist<RenderContext> contexts;
                 contexts.back(new RenderContext(layer->pooling()));
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+                uint32_t _children_start = _lottie_get_ccount();
+#endif
                 updateChildren(layer, frameNo, contexts);
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+                g_lottie_update_children_cycles += _lottie_get_ccount() - _children_start;
+#endif
                 contexts.free();
             }
             break;
@@ -1459,6 +1623,9 @@ void LottieBuilder::updateLayer(LottieComposition* comp, Scene* scene, LottieLay
     updateEffect(layer, frameNo, comp->quality);
 
     if (!layer->matteSrc) scene->push(layer->scene);
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    TVG_LOTTIE_PROFILE_END(g_lottie_update_layer_cycles);
+#endif
 }
 
 
@@ -1568,6 +1735,10 @@ static bool _buildComposition(LottieComposition* comp, LottieLayer* parent)
 
 bool LottieBuilder::update(LottieComposition* comp, float frameNo)
 {
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    uint32_t _update_start = _lottie_get_ccount();
+    g_lottie_update_count++;
+#endif
     if (comp->root->children.empty()) return false;
 
     comp->clamp(frameNo);
@@ -1586,6 +1757,9 @@ bool LottieBuilder::update(LottieComposition* comp, float frameNo)
         if (!layer->matteSrc) updateLayer(comp, comp->root->scene, layer, frameNo);
     }
 
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) && TVG_LOTTIE_PROFILE_ENABLED
+    g_lottie_update_total_cycles += _lottie_get_ccount() - _update_start;
+#endif
     return true;
 }
 

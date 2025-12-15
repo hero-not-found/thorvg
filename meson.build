@@ -107,6 +107,9 @@ if get_option('simd')
   elif host_machine.cpu().startswith('aarch')
     config_h.set10('THORVG_NEON_VECTOR_SUPPORT', true)
     simd_type = 'neon-aarch'
+  elif host_machine.cpu().startswith('esp') or host_machine.cpu_family() == 'xtensa'
+    config_h.set10('THORVG_ESP32_VECTOR_SUPPORT', true)
+    simd_type = 'esp32'
   endif
 endif
 
