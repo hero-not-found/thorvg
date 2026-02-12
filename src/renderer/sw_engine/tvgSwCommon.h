@@ -350,8 +350,8 @@ static inline int32_t TO_SWCOORD(float val)
 
 static inline uint32_t JOIN(uint8_t c0, uint8_t c1, uint8_t c2, uint8_t c3)
 {
-#if LOTTIE_BYTE_SWAP
-    // BGRA: c0=alpha goes to lowest byte
+#if TVG_COLORSPACE_BGRA
+    // BGRA: c0=alpha goes to lowest byte, c1(24) c2(16) c3(8)
     return (c1 << 24 | c2 << 16 | c3 << 8 | c0);
 #else
     return (c0 << 24 | c1 << 16 | c2 << 8 | c3);
@@ -381,7 +381,7 @@ static inline int32_t HALF_STROKE(float width)
 
 static inline uint8_t A(uint32_t c)
 {
-#if LOTTIE_BYTE_SWAP
+#if TVG_COLORSPACE_BGRA
     return (c) & 0xFF;
 #else
     return ((c) >> 24);
@@ -390,7 +390,7 @@ static inline uint8_t A(uint32_t c)
 
 static inline uint8_t IA(uint32_t c)
 {
-#if LOTTIE_BYTE_SWAP
+#if TVG_COLORSPACE_BGRA
     return (~c) & 0xFF;
 #else
     return (~(c) >> 24);
@@ -399,24 +399,38 @@ static inline uint8_t IA(uint32_t c)
 
 static inline uint8_t C1(uint32_t c)
 {
+#if TVG_COLORSPACE_BGRA
+    return ((c) >> 24);
+#else
     return ((c) >> 16);
+#endif
 }
 
 static inline uint8_t C2(uint32_t c)
 {
+#if TVG_COLORSPACE_BGRA
+    return ((c) >> 16);
+#else
     return ((c) >> 8);
+#endif
 }
 
 static inline uint8_t C3(uint32_t c)
 {
+#if TVG_COLORSPACE_BGRA
+    return ((c) >> 8);
+#else
     return (c);
+#endif
 }
 
 static inline uint32_t PREMULTIPLY(uint32_t c, uint8_t a)
 {
-#if LOTTIE_BYTE_SWAP
-    // BGRA: alpha in lowest byte, multiply B(24-31), G(16-23), R(8-15)
-    return (c & 0x000000ff) + ((((c >> 8) & 0x00ff00ff) * a) & 0xff00ff00) + ((((c >> 16) & 0xff) * a) & 0xff00);
+#if TVG_COLORSPACE_BGRA
+    // BGRA: B(24) G(16) R(8) A(0) — keep A, premultiply B, G, R
+    auto br = ((c >> 8) & 0x00ff00ff) * a;   // B and R paired
+    auto g  = ((c >> 16) & 0xff) * a;         // G alone
+    return (c & 0xff) | (br & 0xff00ff00) | ((g & 0xff00) << 8);
 #else
     return (c & 0xff000000) + ((((c >> 8) & 0xff) * a) & 0xff00) + ((((c & 0x00ff00ff) * a) >> 8) & 0x00ff00ff);
 #endif
@@ -615,13 +629,22 @@ static inline uint32_t opBlendHue(uint32_t s, uint32_t d)
     if (!BLEND_UPRE(d, o)) return s;
 
     float sh, ds, dl;
+#if TVG_COLORSPACE_BGRA
+    rasterRGB2HSL(C3(s), C2(s), C1(s), &sh, 0, 0);
+    rasterRGB2HSL(o.b, o.g, o.r, 0, &ds, &dl);
+#else
     rasterRGB2HSL(C1(s), C2(s), C3(s), &sh, 0, 0);
     rasterRGB2HSL(o.r, o.g, o.b, 0, &ds, &dl);
+#endif
 
     uint8_t r, g, b;
     hsl2rgb(sh, ds, dl, r, g, b);
 
+#if TVG_COLORSPACE_BGRA
+    return BLEND_PRE(JOIN(255, b, g, r), s, o.a);
+#else
     return BLEND_PRE(JOIN(255, r, g, b), s, o.a);
+#endif
 }
 
 static inline uint32_t opBlendSaturation(uint32_t s, uint32_t d)
@@ -630,13 +653,22 @@ static inline uint32_t opBlendSaturation(uint32_t s, uint32_t d)
     if (!BLEND_UPRE(d, o)) return s;
 
     float dh, ss, dl;
+#if TVG_COLORSPACE_BGRA
+    rasterRGB2HSL(C3(s), C2(s), C1(s), 0, &ss, 0);
+    rasterRGB2HSL(o.b, o.g, o.r, &dh, 0, &dl);
+#else
     rasterRGB2HSL(C1(s), C2(s), C3(s), 0, &ss, 0);
     rasterRGB2HSL(o.r, o.g, o.b, &dh, 0, &dl);
+#endif
 
     uint8_t r, g, b;
     hsl2rgb(dh, ss, dl, r, g, b);
 
+#if TVG_COLORSPACE_BGRA
+    return BLEND_PRE(JOIN(255, b, g, r), s, o.a);
+#else
     return BLEND_PRE(JOIN(255, r, g, b), s, o.a);
+#endif
 }
 
 static inline uint32_t opBlendColor(uint32_t s, uint32_t d)
@@ -645,13 +677,22 @@ static inline uint32_t opBlendColor(uint32_t s, uint32_t d)
     if (!BLEND_UPRE(d, o)) return s;
 
     float sh, ss, dl;
+#if TVG_COLORSPACE_BGRA
+    rasterRGB2HSL(C3(s), C2(s), C1(s), &sh, &ss, 0);
+    rasterRGB2HSL(o.b, o.g, o.r, 0, 0, &dl);
+#else
     rasterRGB2HSL(C1(s), C2(s), C3(s), &sh, &ss, 0);
     rasterRGB2HSL(o.r, o.g, o.b, 0, 0, &dl);
+#endif
 
     uint8_t r, g, b;
     hsl2rgb(sh, ss, dl, r, g, b);
 
+#if TVG_COLORSPACE_BGRA
+    return BLEND_PRE(JOIN(255, b, g, r), s, o.a);
+#else
     return BLEND_PRE(JOIN(255, r, g, b), s, o.a);
+#endif
 }
 
 static inline uint32_t opBlendLuminosity(uint32_t s, uint32_t d)
@@ -660,13 +701,22 @@ static inline uint32_t opBlendLuminosity(uint32_t s, uint32_t d)
     if (!BLEND_UPRE(d, o)) return s;
 
     float dh, ds, sl;
+#if TVG_COLORSPACE_BGRA
+    rasterRGB2HSL(C3(s), C2(s), C1(s), 0, 0, &sl);
+    rasterRGB2HSL(o.b, o.g, o.r, &dh, &ds, 0);
+#else
     rasterRGB2HSL(C1(s), C2(s), C3(s), 0, 0, &sl);
     rasterRGB2HSL(o.r, o.g, o.b, &dh, &ds, 0);
+#endif
 
     uint8_t r, g, b;
     hsl2rgb(dh, ds, sl, r, g, b);
 
+#if TVG_COLORSPACE_BGRA
+    return BLEND_PRE(JOIN(255, b, g, r), s, o.a);
+#else
     return BLEND_PRE(JOIN(255, r, g, b), s, o.a);
+#endif
 }
 
 int64_t mathMultiply(int64_t a, int64_t b);
