@@ -105,6 +105,20 @@ extern "C" void tvg_shape_profile_reset(void) {}
 static atomic<int32_t> rendererCnt{-1};
 static SwMpool* globalMpool = nullptr;
 static uint32_t threadsCnt = 0;
+static float g_tvg_stroke_aa_threshold = 2.0f;
+
+extern "C" float tvg_sw_renderer_get_stroke_aa_threshold(void)
+{
+    return g_tvg_stroke_aa_threshold;
+}
+
+extern "C" float tvg_sw_renderer_set_stroke_aa_threshold(float threshold)
+{
+    if (threshold < 0.0f) threshold = 0.0f;
+    else if (threshold > 64.0f) threshold = 64.0f;
+    g_tvg_stroke_aa_threshold = threshold;
+    return g_tvg_stroke_aa_threshold;
+}
 
 struct SwTask : Task
 {
@@ -168,7 +182,7 @@ struct SwShapeTask : SwTask
        Additionally, the stroke style should not be dashed. */
     bool antialiasing(float strokeWidth)
     {
-        return strokeWidth < 2.0f || rshape->stroke->dash.count > 0 || rshape->stroke->first || rshape->trimpath() || rshape->stroke->color.a < 255;
+        return strokeWidth < g_tvg_stroke_aa_threshold || rshape->stroke->dash.count > 0 || rshape->stroke->first || rshape->trimpath() || rshape->stroke->color.a < 255;
     }
 
     float validStrokeWidth(bool clipper)

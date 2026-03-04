@@ -278,9 +278,37 @@ extern "C" void tvg_rle_profile_reset(void) {}
 /************************************************************************/
 /* Internal Class Implementation                                        */
 /************************************************************************/
+static uint8_t g_tvg_pixel_bits = 8;         // must be at least 6 bits
+static uint8_t g_tvg_bezier_quality = 6;     // stock ThorVG subdivision quality
 
-constexpr auto PIXEL_BITS = 8;   //must be at least 6 bits!
-constexpr auto ONE_PIXEL = (1 << PIXEL_BITS);
+extern "C" uint32_t tvg_sw_rle_get_pixel_bits(void)
+{
+    return g_tvg_pixel_bits;
+}
+
+extern "C" uint32_t tvg_sw_rle_set_pixel_bits(uint32_t bits)
+{
+    if (bits < 6) bits = 6;
+    else if (bits > 10) bits = 10;
+    g_tvg_pixel_bits = static_cast<uint8_t>(bits);
+    return g_tvg_pixel_bits;
+}
+
+extern "C" uint32_t tvg_sw_rle_get_bezier_quality(void)
+{
+    return g_tvg_bezier_quality;
+}
+
+extern "C" uint32_t tvg_sw_rle_set_bezier_quality(uint32_t quality)
+{
+    if (quality < 1) quality = 1;
+    else if (quality > 16) quality = 16;
+    g_tvg_bezier_quality = static_cast<uint8_t>(quality);
+    return g_tvg_bezier_quality;
+}
+
+#define PIXEL_BITS (g_tvg_pixel_bits)
+#define ONE_PIXEL (1 << PIXEL_BITS)
 
 struct Band
 {
@@ -753,7 +781,7 @@ static bool _cubicTo(RleWorker& rw, const SwPoint& ctrl1, const SwPoint& ctrl2, 
             if (L > SHRT_MAX) goto split;
 
             //max deviation may be as much as (s/L) * 3/4 (if Hain's v = 1)
-            auto sLimit = L * (ONE_PIXEL / 6);
+            auto sLimit = L * (ONE_PIXEL / g_tvg_bezier_quality);
 
             auto diff1 = arc[1] - arc[0];
             auto s = diff.y * diff1.x - diff.x * diff1.y;
