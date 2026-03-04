@@ -133,6 +133,7 @@ uint16_t THORVG_VERSION_NUMBER()
 }
 
 
+#ifndef THORVG_NO_ALLOC_OVERRIDE
 void* operator new(std::size_t size) {
     return tvg::malloc(size);
 }
@@ -141,3 +142,4 @@ void* operator new(std::size_t size) {
 void operator delete(void* ptr) noexcept {
     tvg::free(ptr);
 }
+#endif
