@@ -120,7 +120,7 @@ TVG_API Tvg_Result tvg_canvas_add(Tvg_Canvas canvas, Tvg_Paint paint)
 
 TVG_API Tvg_Result tvg_canvas_insert(Tvg_Canvas canvas, Tvg_Paint target, Tvg_Paint at)
 {
-    if (canvas && target && at) return (Tvg_Result) reinterpret_cast<Canvas*>(canvas)->add((Paint*)target, (Paint*) at);
+    if (canvas && target) return (Tvg_Result) reinterpret_cast<Canvas*>(canvas)->add((Paint*)target, (Paint*) at);
     return TVG_RESULT_INVALID_ARGUMENT;
 }
 
@@ -648,7 +648,7 @@ TVG_API Tvg_Result tvg_picture_get_size(const Tvg_Paint picture, float* w, float
 }
 
 
-TVG_API const Tvg_Paint tvg_picture_get_paint(Tvg_Paint picture, uint32_t id)
+TVG_API Tvg_Paint tvg_picture_get_paint(Tvg_Paint picture, uint32_t id)
 {
     if (picture) return (Tvg_Paint) reinterpret_cast<Picture*>(picture)->paint(id);
     return nullptr;
@@ -810,7 +810,7 @@ TVG_API Tvg_Result tvg_scene_add(Tvg_Paint scene, Tvg_Paint paint)
 
 TVG_API Tvg_Result tvg_scene_insert(Tvg_Paint scene, Tvg_Paint paint, Tvg_Paint at)
 {
-    if (scene && paint && at) return (Tvg_Result) reinterpret_cast<Scene*>(scene)->add((Paint*)paint, (Paint*)at);
+    if (scene && paint) return (Tvg_Result) reinterpret_cast<Scene*>(scene)->add((Paint*)paint, (Paint*)at);
     return TVG_RESULT_INVALID_ARGUMENT;
 }
 

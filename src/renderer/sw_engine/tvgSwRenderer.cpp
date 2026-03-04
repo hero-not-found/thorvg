@@ -31,6 +31,75 @@
 #endif
 
 /************************************************************************/
+/* Shape Update Profiling                                               */
+/************************************************************************/
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+#define TVG_SHAPE_PROFILE_ENABLED 1
+
+#if TVG_SHAPE_PROFILE_ENABLED
+
+static inline uint32_t get_ccount()
+{
+    uint32_t ccount;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(ccount));
+    return ccount;
+}
+
+static uint32_t g_tvg_shape_prepare_cycles = 0;
+static uint32_t g_tvg_shape_gen_rle_cycles = 0;
+static uint32_t g_tvg_shape_gen_fill_cycles = 0;
+static uint32_t g_tvg_shape_gen_stroke_cycles = 0;
+static uint32_t g_tvg_shape_prepare_count = 0;
+static uint32_t g_tvg_shape_gen_rle_count = 0;
+static uint32_t g_tvg_shape_gen_fill_count = 0;
+static uint32_t g_tvg_shape_gen_stroke_count = 0;
+
+static uint32_t _profile_start;
+#define TVG_SHAPE_PROFILE_START() _profile_start = get_ccount()
+#define TVG_SHAPE_PROFILE_END(cycles, count) do { \
+    cycles += get_ccount() - _profile_start; \
+    count++; \
+} while (0)
+
+extern "C" void tvg_shape_profile_get_stats(uint32_t* stats)
+{
+    stats[0] = g_tvg_shape_prepare_cycles / 240;
+    stats[1] = g_tvg_shape_gen_rle_cycles / 240;
+    stats[2] = g_tvg_shape_gen_fill_cycles / 240;
+    stats[3] = g_tvg_shape_gen_stroke_cycles / 240;
+    stats[4] = g_tvg_shape_prepare_count;
+    stats[5] = g_tvg_shape_gen_rle_count;
+    stats[6] = g_tvg_shape_gen_fill_count;
+    stats[7] = g_tvg_shape_gen_stroke_count;
+}
+
+extern "C" void tvg_shape_profile_reset(void)
+{
+    g_tvg_shape_prepare_cycles = 0;
+    g_tvg_shape_gen_rle_cycles = 0;
+    g_tvg_shape_gen_fill_cycles = 0;
+    g_tvg_shape_gen_stroke_cycles = 0;
+    g_tvg_shape_prepare_count = 0;
+    g_tvg_shape_gen_rle_count = 0;
+    g_tvg_shape_gen_fill_count = 0;
+    g_tvg_shape_gen_stroke_count = 0;
+}
+
+#else
+#define TVG_SHAPE_PROFILE_START()
+#define TVG_SHAPE_PROFILE_END(cycles, count)
+extern "C" void tvg_shape_profile_get_stats(uint32_t* stats) { (void) stats; }
+extern "C" void tvg_shape_profile_reset(void) {}
+#endif
+
+#else
+#define TVG_SHAPE_PROFILE_START()
+#define TVG_SHAPE_PROFILE_END(cycles, count)
+extern "C" void tvg_shape_profile_get_stats(uint32_t* stats) { (void) stats; }
+extern "C" void tvg_shape_profile_reset(void) {}
+#endif
+
+/************************************************************************/
 /* Internal Class Implementation                                        */
 /************************************************************************/
 static atomic<int32_t> rendererCnt{-1};
@@ -130,8 +199,14 @@ struct SwShapeTask : SwTask
         if (updateShape) {
             shapeReset(shape);
             if (rshape->fill || rshape->color.a > 0 || clipper) {
-                if (shapePrepare(shape, rshape, transform, clipBox, curBox, mpool, tid, clips.count > 0 ? true : false)) {
-                    if (!shapeGenRle(shape, curBox, mpool, tid, antialiasing(strokeWidth))) goto err;
+                TVG_SHAPE_PROFILE_START();
+                auto prepResult = shapePrepare(shape, rshape, transform, clipBox, curBox, mpool, tid, clips.count > 0 ? true : false);
+                TVG_SHAPE_PROFILE_END(g_tvg_shape_prepare_cycles, g_tvg_shape_prepare_count);
+                if (prepResult) {
+                    TVG_SHAPE_PROFILE_START();
+                    auto rleResult = shapeGenRle(shape, curBox, mpool, tid, antialiasing(strokeWidth));
+                    TVG_SHAPE_PROFILE_END(g_tvg_shape_gen_rle_cycles, g_tvg_shape_gen_rle_count);
+                    if (!rleResult) goto err;
                 } else {
                     updateFill = false;
                     curBox.reset();
@@ -143,14 +218,20 @@ struct SwShapeTask : SwTask
             if (auto fill = rshape->fill) {
                 auto ctable = (flags[0] & RenderUpdateFlag::Gradient) ? true : false;
                 if (ctable) shapeResetFill(shape);
-                if (!shapeGenFillColors(shape, fill, transform, surface, opacity, ctable)) goto err;
+                TVG_SHAPE_PROFILE_START();
+                auto fillResult = shapeGenFillColors(shape, fill, transform, surface, opacity, ctable);
+                TVG_SHAPE_PROFILE_END(g_tvg_shape_gen_fill_cycles, g_tvg_shape_gen_fill_count);
+                if (!fillResult) goto err;
             }
         }
         //Stroke
         if (updateShape || flags[0] & RenderUpdateFlag::Stroke) {
             if (strokeWidth > 0.0f) {
                 shapeResetStroke(shape, rshape, transform, mpool, tid);
-                if (!shapeGenStrokeRle(shape, rshape, transform, clipBox, curBox, mpool, tid)) goto err;
+                TVG_SHAPE_PROFILE_START();
+                auto strokeResult = shapeGenStrokeRle(shape, rshape, transform, clipBox, curBox, mpool, tid);
+                TVG_SHAPE_PROFILE_END(g_tvg_shape_gen_stroke_cycles, g_tvg_shape_gen_stroke_count);
+                if (!strokeResult) goto err;
                 if (auto fill = rshape->strokeFill()) {
                     auto ctable = (flags[0] & RenderUpdateFlag::GradientStroke) ? true : false;
                     if (ctable) shapeResetStrokeFill(shape);

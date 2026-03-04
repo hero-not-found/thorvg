@@ -2163,7 +2163,7 @@ TVG_API Tvg_Result tvg_picture_get_origin(const Tvg_Paint picture, float* x, flo
  * @see tvg_accessor_generate_id()
  * @since 1.0
  */
-TVG_API const Tvg_Paint tvg_picture_get_paint(Tvg_Paint picture, uint32_t id);
+TVG_API Tvg_Paint tvg_picture_get_paint(Tvg_Paint picture, uint32_t id);
 
 
 /** \} */   // end defgroup ThorVGCapi_Picture

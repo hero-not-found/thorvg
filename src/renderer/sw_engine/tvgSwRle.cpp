@@ -192,6 +192,90 @@
 #include "tvgSwCommon.h"
 
 /************************************************************************/
+/* RLE Function Profiling for ESP32                                     */
+/************************************************************************/
+
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+#define TVG_RLE_PROFILE_ENABLED 1
+
+#if TVG_RLE_PROFILE_ENABLED
+
+static inline uint32_t _rle_get_ccount()
+{
+    uint32_t ccount;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(ccount));
+    return ccount;
+}
+
+static uint32_t g_lineTo_cycles = 0;
+static uint32_t g_cubicTo_cycles = 0;
+static uint32_t g_findCell_cycles = 0;
+static uint32_t g_setCell_cycles = 0;
+static uint32_t g_sweep_cycles = 0;
+
+static uint32_t g_lineTo_calls = 0;
+static uint32_t g_cubicTo_calls = 0;
+static uint32_t g_findCell_calls = 0;
+static uint32_t g_setCell_calls = 0;
+static uint32_t g_sweep_calls = 0;
+
+static uint32_t _rle_profile_start;
+#define TVG_RLE_PROFILE_START() _rle_profile_start = _rle_get_ccount()
+#define TVG_RLE_PROFILE_END(cycles, count) do { \
+    cycles += _rle_get_ccount() - _rle_profile_start; \
+    count++; \
+} while (0)
+
+extern "C" void tvg_rle_profile_get(uint32_t* lineTo_us, uint32_t* cubicTo_us, uint32_t* findCell_us, uint32_t* setCell_us, uint32_t* sweep_us, uint32_t* recordCell_us)
+{
+    *lineTo_us = g_lineTo_cycles / 240;
+    *cubicTo_us = g_cubicTo_cycles / 240;
+    *findCell_us = g_findCell_cycles / 240;
+    *setCell_us = g_setCell_cycles / 240;
+    *sweep_us = g_sweep_cycles / 240;
+    *recordCell_us = 0;
+}
+
+extern "C" void tvg_rle_profile_get_calls(uint32_t* lineTo, uint32_t* cubicTo, uint32_t* findCell, uint32_t* setCell, uint32_t* sweep)
+{
+    *lineTo = g_lineTo_calls;
+    *cubicTo = g_cubicTo_calls;
+    *findCell = g_findCell_calls;
+    *setCell = g_setCell_calls;
+    *sweep = g_sweep_calls;
+}
+
+extern "C" void tvg_rle_profile_reset(void)
+{
+    g_lineTo_cycles = 0;
+    g_cubicTo_cycles = 0;
+    g_findCell_cycles = 0;
+    g_setCell_cycles = 0;
+    g_sweep_cycles = 0;
+    g_lineTo_calls = 0;
+    g_cubicTo_calls = 0;
+    g_findCell_calls = 0;
+    g_setCell_calls = 0;
+    g_sweep_calls = 0;
+}
+
+#else
+#define TVG_RLE_PROFILE_START()
+#define TVG_RLE_PROFILE_END(a, b)
+extern "C" void tvg_rle_profile_get(uint32_t* lineTo_us, uint32_t* cubicTo_us, uint32_t* findCell_us, uint32_t* setCell_us, uint32_t* sweep_us, uint32_t* recordCell_us) { (void) lineTo_us; (void) cubicTo_us; (void) findCell_us; (void) setCell_us; (void) sweep_us; (void) recordCell_us; }
+extern "C" void tvg_rle_profile_get_calls(uint32_t* lineTo, uint32_t* cubicTo, uint32_t* findCell, uint32_t* setCell, uint32_t* sweep) { (void) lineTo; (void) cubicTo; (void) findCell; (void) setCell; (void) sweep; }
+extern "C" void tvg_rle_profile_reset(void) {}
+#endif
+
+#else
+#define TVG_RLE_PROFILE_START()
+#define TVG_RLE_PROFILE_END(a, b)
+extern "C" void tvg_rle_profile_get(uint32_t* lineTo_us, uint32_t* cubicTo_us, uint32_t* findCell_us, uint32_t* setCell_us, uint32_t* sweep_us, uint32_t* recordCell_us) { (void) lineTo_us; (void) cubicTo_us; (void) findCell_us; (void) setCell_us; (void) sweep_us; (void) recordCell_us; }
+extern "C" void tvg_rle_profile_get_calls(uint32_t* lineTo, uint32_t* cubicTo, uint32_t* findCell, uint32_t* setCell, uint32_t* sweep) { (void) lineTo; (void) cubicTo; (void) findCell; (void) setCell; (void) sweep; }
+extern "C" void tvg_rle_profile_reset(void) {}
+#endif
+
+/************************************************************************/
 /* Internal Class Implementation                                        */
 /************************************************************************/
 
@@ -352,7 +436,11 @@ static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_
 
 static void _sweep(RleWorker& rw)
 {
-    if (rw.cellsCnt == 0) return;
+    TVG_RLE_PROFILE_START();
+    if (rw.cellsCnt == 0) {
+        TVG_RLE_PROFILE_END(g_sweep_cycles, g_sweep_calls);
+        return;
+    }
 
     for (int y = 0; y < rw.yCnt; ++y) {
         auto cover = 0;
@@ -370,11 +458,13 @@ static void _sweep(RleWorker& rw)
 
         if (cover != 0) _horizLine(rw, x, y, cover * (ONE_PIXEL * 2), rw.cellXCnt - x);
     }
+    TVG_RLE_PROFILE_END(g_sweep_cycles, g_sweep_calls);
 }
 
 
 static SwCell* _findCell(RleWorker& rw)
 {
+    TVG_RLE_PROFILE_START();
     auto x = rw.cellPos.x;
     if (x > rw.cellXCnt) x = rw.cellXCnt;
 
@@ -383,11 +473,17 @@ static SwCell* _findCell(RleWorker& rw)
     while(true) {
         auto cell = *pcell;
         if (!cell || cell->x > x) break;
-        if (cell->x == x) return cell;
+        if (cell->x == x) {
+            TVG_RLE_PROFILE_END(g_findCell_cycles, g_findCell_calls);
+            return cell;
+        }
         pcell = &cell->next;
     }
 
-    if (rw.cellsCnt >= rw.maxCells) return nullptr;
+    if (rw.cellsCnt >= rw.maxCells) {
+        TVG_RLE_PROFILE_END(g_findCell_cycles, g_findCell_calls);
+        return nullptr;
+    }
 
     auto cell = rw.cells + rw.cellsCnt++;
     cell->x = x;
@@ -396,6 +492,7 @@ static SwCell* _findCell(RleWorker& rw)
     cell->next = *pcell;
     *pcell = cell;
 
+    TVG_RLE_PROFILE_END(g_findCell_cycles, g_findCell_calls);
     return cell;
 }
 
@@ -415,6 +512,7 @@ static bool _recordCell(RleWorker& rw)
 
 static bool _setCell(RleWorker& rw, SwPoint pos)
 {
+    TVG_RLE_PROFILE_START();
     /* Move the cell pointer to a new position.  We set the `invalid'      */
     /* flag to indicate that the cell isn't part of those we're interested */
     /* in during the render phase.  This means that:                       */
@@ -436,12 +534,16 @@ static bool _setCell(RleWorker& rw, SwPoint pos)
     //Are we moving to a different cell?
     if (pos != rw.cellPos) {
         //Record the current one if it is valid
-        if (!rw.invalid && !_recordCell(rw)) return false;
+        if (!rw.invalid && !_recordCell(rw)) {
+            TVG_RLE_PROFILE_END(g_setCell_cycles, g_setCell_calls);
+            return false;
+        }
         rw.area = rw.cover = 0;
         rw.cellPos = pos;
     }
     rw.invalid = ((unsigned)pos.y >= (unsigned)rw.cellYCnt || pos.x >= rw.cellXCnt);
 
+    TVG_RLE_PROFILE_END(g_setCell_cycles, g_setCell_calls);
     return true;
 }
 
@@ -476,12 +578,14 @@ static bool _moveTo(RleWorker& rw, const SwPoint& to)
 
 static bool _lineTo(RleWorker& rw, const SwPoint& to)
 {
+    TVG_RLE_PROFILE_START();
     auto e1 = TRUNC(rw.pos);
     auto e2 = TRUNC(to);
 
     //vertical clipping
     if ((e1.y >= rw.cellMax.y && e2.y >= rw.cellMax.y) || (e1.y < rw.cellMin.y && e2.y < rw.cellMin.y)) {
         rw.pos = to;
+        TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
         return true;
     }
 
@@ -508,7 +612,10 @@ static bool _lineTo(RleWorker& rw, const SwPoint& to)
         //any horizontal line
         } else if (diff.y == 0) {
             e1.x = e2.x;
-            if (!_setCell(rw, e1)) return false;
+            if (!_setCell(rw, e1)) {
+                TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+                return false;
+            }
         } else if (diff.x == 0) {
             //vertical line up
             if (diff.y > 0) {
@@ -518,7 +625,10 @@ static bool _lineTo(RleWorker& rw, const SwPoint& to)
                     rw.area += (f2.y - f1.y) * f1.x * 2;
                     f1.y = 0;
                     ++e1.y;
-                    if (!_setCell(rw, e1)) return false;
+                    if (!_setCell(rw, e1)) {
+                        TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+                        return false;
+                    }
                 } while(e1.y != e2.y);
             //vertical line down
             } else {
@@ -528,7 +638,10 @@ static bool _lineTo(RleWorker& rw, const SwPoint& to)
                     rw.area += (f2.y - f1.y) * f1.x * 2;
                     f1.y = ONE_PIXEL;
                     --e1.y;
-                    if (!_setCell(rw, e1)) return false;
+                    if (!_setCell(rw, e1)) {
+                        TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+                        return false;
+                    }
                 } while(e1.y != e2.y);
             }
         //any other line
@@ -583,7 +696,10 @@ static bool _lineTo(RleWorker& rw, const SwPoint& to)
                     --e1.y;
                 }
 
-                if (!_setCell(rw, e1)) return false;
+                if (!_setCell(rw, e1)) {
+                    TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+                    return false;
+                }
 
             } while(e1 != e2);
         }
@@ -593,13 +709,17 @@ static bool _lineTo(RleWorker& rw, const SwPoint& to)
         rw.area += (f2.y - f1.y) * (f1.x + f2.x);
         rw.pos = line[0];
 
-        if (line-- == rw.lineStack) return true;
+        if (line-- == rw.lineStack) {
+            TVG_RLE_PROFILE_END(g_lineTo_cycles, g_lineTo_calls);
+            return true;
+        }
     }
 }
 
 
 static bool _cubicTo(RleWorker& rw, const SwPoint& ctrl1, const SwPoint& ctrl2, const SwPoint& to)
 {
+    TVG_RLE_PROFILE_START();
     auto arc = rw.bezStack;
     arc[0] = to;
     arc[1] = ctrl2;
@@ -662,8 +782,14 @@ static bool _cubicTo(RleWorker& rw, const SwPoint& ctrl1, const SwPoint& ctrl2, 
         continue;
 
     draw:
-        if (!_lineTo(rw, arc[0])) return false;
-        if (arc == rw.bezStack) return true;
+        if (!_lineTo(rw, arc[0])) {
+            TVG_RLE_PROFILE_END(g_cubicTo_cycles, g_cubicTo_calls);
+            return false;
+        }
+        if (arc == rw.bezStack) {
+            TVG_RLE_PROFILE_END(g_cubicTo_cycles, g_cubicTo_calls);
+            return true;
+        }
         arc -= 3;
     }
 }
