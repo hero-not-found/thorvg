@@ -89,14 +89,14 @@ static void _adjustAAMargin(uint32_t& iMargin, uint32_t index)
 
 static inline uint32_t _alphaUnblend(uint32_t c)
 {
-    auto a = (c >> 24);
+    auto a = A(c);
     if (a == 255 || a == 0) return c;
     auto invA = 255.0f / static_cast<float>(a);
-    auto c0 = static_cast<uint8_t>(static_cast<float>((c >> 16) & 0xFF) * invA);
-    auto c1 = static_cast<uint8_t>(static_cast<float>((c >> 8) & 0xFF) * invA);
-    auto c2 = static_cast<uint8_t>(static_cast<float>(c & 0xFF) * invA);
+    auto ch1 = static_cast<uint8_t>(static_cast<float>(C1(c)) * invA);
+    auto ch2 = static_cast<uint8_t>(static_cast<float>(C2(c)) * invA);
+    auto ch3 = static_cast<uint8_t>(static_cast<float>(C3(c)) * invA);
 
-    return (a << 24) | (c0 << 16) | (c1 << 8) | c2;
+    return JOIN(a, ch1, ch2, ch3);
 }
 
 
@@ -113,7 +113,7 @@ static void _applyAA(SwFill* fill, uint32_t begin, uint32_t end)
     while (i != begin) {
         auto dist = 255 - static_cast<int32_t>(255 * t);
         auto color = INTERPOLATE(rgbaEnd, rgbaBegin, dist);
-        fill->ctable[i++] = ALPHA_BLEND((color | 0xff000000), (color >> 24));
+        fill->ctable[i++] = ALPHA_BLEND(JOIN(255, C1(color), C2(color), C3(color)), A(color));
 
         if (i == SW_COLOR_TABLE) i = 0;
         t += dt;
@@ -147,7 +147,7 @@ static bool _updateColorTable(SwFill* fill, const Fill* fdata, const SwSurface* 
     uint32_t iAABegin = repeat ? _estimateAAMargin(fdata) : 0;
     uint32_t iAAEnd = 0;
 
-    fill->ctable[i++] = ALPHA_BLEND(rgba | 0xff000000, a);
+    fill->ctable[i++] = ALPHA_BLEND(JOIN(255, C1(rgba), C2(rgba), C3(rgba)), a);
 
     while (pos <= pColors->offset) {
         fill->ctable[i] = fill->ctable[i - 1];
@@ -176,7 +176,7 @@ static bool _updateColorTable(SwFill* fill, const Fill* fdata, const SwSurface* 
             auto dist = static_cast<int32_t>(255 * t);
             auto dist2 = 255 - dist;
             auto color = INTERPOLATE(rgba, rgba2, dist2);
-            fill->ctable[i] = ALPHA_BLEND((color | 0xff000000), (color >> 24));
+            fill->ctable[i] = ALPHA_BLEND(JOIN(255, C1(color), C2(color), C3(color)), A(color));
             ++i;
             pos += inc;
         }
@@ -185,7 +185,7 @@ static bool _updateColorTable(SwFill* fill, const Fill* fdata, const SwSurface* 
 
         if (repeat && j == 0) _adjustAAMargin(iAABegin, i - 1);
     }
-    rgba = ALPHA_BLEND((rgba | 0xff000000), a);
+    rgba = ALPHA_BLEND(JOIN(255, C1(rgba), C2(rgba), C3(rgba)), a);
 
     for (; i < SW_COLOR_TABLE; ++i) {
         fill->ctable[i] = rgba;

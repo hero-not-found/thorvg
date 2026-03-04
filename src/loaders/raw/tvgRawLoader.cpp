@@ -59,7 +59,7 @@ bool RawLoader::open(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs
     surface.h = h;
     surface.cs = cs;
     surface.channelSize = sizeof(uint32_t);
-    surface.premultiplied = (cs == ColorSpace::ABGR8888 || cs == ColorSpace::ARGB8888) ? true : false;
+    surface.premultiplied = (cs == ColorSpace::ABGR8888 || cs == ColorSpace::ARGB8888 || cs == ColorSpace::BGRA8888) ? true : false;
 
     return true;
 }

@@ -126,16 +126,35 @@ static inline uint8_t _argbInvLuma(uint8_t* c)
 }
 
 
+static inline uint8_t _bgraLuma(uint8_t* c)
+{
+    auto v = *(uint32_t*)c;
+    // BGRA: B(24) G(16) R(8) A(0)
+    return ((((v>>8)&0xff)*54) + (((v>>16)&0xff)*182) + (((v>>24))*19)) >> 8; //0.2126*R + 0.7152*G + 0.0722*B
+}
+
+
+static inline uint8_t _bgraInvLuma(uint8_t* c)
+{
+    return ~_bgraLuma(c);
+}
+
+
 static inline uint32_t _abgrJoin(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     return (a << 24 | b << 16 | g << 8 | r);
 }
 
 
-static inline uint32_t _argbJoin(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
-{
+static inline uint32_t _argbJoin(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     return (a << 24 | r << 16 | g << 8 | b);
 }
+
+
+static inline uint32_t _bgraJoin(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    return (b << 24 | g << 16 | r << 8 | a);
+}
+
 
 static inline bool _blending(const SwSurface* surface)
 {
@@ -309,7 +328,7 @@ static uint32_t _interpDownScaler(const uint32_t *img, uint32_t stride, uint32_t
     c[2] /= n;
     c[3] /= n;
 
-    return (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3];
+    return JOIN(c[0], c[1], c[2], c[3]);
 }
 
 
@@ -1484,6 +1503,10 @@ bool rasterCompositor(SwSurface* surface)
         surface->join = _argbJoin;
         surface->alphas[2] = _argbLuma;
         surface->alphas[3] = _argbInvLuma;
+    } else if (surface->cs == ColorSpace::BGRA8888 || surface->cs == ColorSpace::BGRA8888S) {
+        surface->join = _bgraJoin;
+        surface->alphas[2] = _bgraLuma;
+        surface->alphas[3] = _bgraInvLuma;
     } else {
         TVGERR("SW_ENGINE", "Unsupported Colorspace(%d) is expected!", (int)surface->cs);
         return false;
@@ -1717,6 +1740,10 @@ bool rasterStroke(SwSurface* surface, SwShape* shape, const RenderRegion& bbox, 
 }
 
 
+static inline bool _isABGR(ColorSpace cs) { return cs == ColorSpace::ABGR8888 || cs == ColorSpace::ABGR8888S; }
+static inline bool _isARGB(ColorSpace cs) { return cs == ColorSpace::ARGB8888 || cs == ColorSpace::ARGB8888S; }
+static inline bool _isBGRA(ColorSpace cs) { return cs == ColorSpace::BGRA8888 || cs == ColorSpace::BGRA8888S; }
+
 bool rasterConvertCS(RenderSurface* surface, ColorSpace to)
 {
     ScopedLock lock(surface->key);
@@ -1725,13 +1752,29 @@ bool rasterConvertCS(RenderSurface* surface, ColorSpace to)
     //TODO: Support SIMD accelerations
     auto from = surface->cs;
 
-    if (((from == ColorSpace::ABGR8888) || (from == ColorSpace::ABGR8888S)) && ((to == ColorSpace::ARGB8888) || (to == ColorSpace::ARGB8888S))) {
+    if (_isABGR(from) && _isARGB(to)) {
         surface->cs = to;
         return cRasterABGRtoARGB(surface);
     }
-    if (((from == ColorSpace::ARGB8888) || (from == ColorSpace::ARGB8888S)) && ((to == ColorSpace::ABGR8888) || (to == ColorSpace::ABGR8888S))) {
+    if (_isARGB(from) && _isABGR(to)) {
         surface->cs = to;
         return cRasterARGBtoABGR(surface);
+    }
+    if (_isABGR(from) && _isBGRA(to)) {
+        surface->cs = to;
+        return cRasterABGRtoBGRA(surface);
+    }
+    if (_isBGRA(from) && _isABGR(to)) {
+        surface->cs = to;
+        return cRasterBGRAtoABGR(surface);
+    }
+    if (_isARGB(from) && _isBGRA(to)) {
+        surface->cs = to;
+        return cRasterARGBtoBGRA(surface);
+    }
+    if (_isBGRA(from) && _isARGB(to)) {
+        surface->cs = to;
+        return cRasterBGRAtoARGB(surface);
     }
     return false;
 }
