@@ -659,6 +659,8 @@ static inline uint8_t CHANNEL_SIZE(ColorSpace cs)
         case ColorSpace::ABGR8888S:
         case ColorSpace::ARGB8888:
         case ColorSpace::ARGB8888S:
+        case ColorSpace::BGRA8888:
+        case ColorSpace::BGRA8888S:
             return sizeof(uint32_t);
         case ColorSpace::Grayscale8:
             return sizeof(uint8_t);

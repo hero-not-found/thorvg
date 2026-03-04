@@ -8,7 +8,8 @@
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
 
- * The above copyright notice and this permission notice shall be included in all
+ * The above copyright notice and this permission notice shall be included in
+ all
  * copies or substantial portions of the Software.
 
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -20,167 +21,171 @@
  * SOFTWARE.
  */
 
-
-template<typename PIXEL_T>
-static void inline cRasterTranslucentPixels(PIXEL_T* dst, PIXEL_T* src, uint32_t len, uint32_t opacity)
-{
-    //TODO: 64bits faster?
-    if (opacity == 255) {
-        for (uint32_t x = 0; x < len; ++x, ++dst, ++src) {
-            *dst = *src + ALPHA_BLEND(*dst, IA(*src));
-        }
-    } else {
-        for (uint32_t x = 0; x < len; ++x, ++dst, ++src) {
-            auto tmp = ALPHA_BLEND(*src, opacity);
-            *dst = tmp + ALPHA_BLEND(*dst, IA(tmp));
-        }
+template <typename PIXEL_T>
+static void inline cRasterTranslucentPixels(PIXEL_T *dst, PIXEL_T *src,
+                                            uint32_t len, uint32_t opacity) {
+  // TODO: 64bits faster?
+  if (opacity == 255) {
+    for (uint32_t x = 0; x < len; ++x, ++dst, ++src) {
+      *dst = *src + ALPHA_BLEND(*dst, IA(*src));
     }
+  } else {
+    for (uint32_t x = 0; x < len; ++x, ++dst, ++src) {
+      auto tmp = ALPHA_BLEND(*src, opacity);
+      *dst = tmp + ALPHA_BLEND(*dst, IA(tmp));
+    }
+  }
 }
 
-
-template<typename PIXEL_T>
-static void inline cRasterPixels(PIXEL_T* dst, PIXEL_T* src, uint32_t len, uint32_t opacity)
-{
-    //TODO: 64bits faster?
-    if (opacity == 255) {
-        for (uint32_t x = 0; x < len; ++x, ++dst, ++src) {
-            *dst = *src;
-        }
-    } else {
-        cRasterTranslucentPixels(dst, src, len, opacity);
+template <typename PIXEL_T>
+static void inline cRasterPixels(PIXEL_T *dst, PIXEL_T *src, uint32_t len,
+                                 uint32_t opacity) {
+  // TODO: 64bits faster?
+  if (opacity == 255) {
+    for (uint32_t x = 0; x < len; ++x, ++dst, ++src) {
+      *dst = *src;
     }
+  } else {
+    cRasterTranslucentPixels(dst, src, len, opacity);
+  }
 }
 
+template <typename PIXEL_T>
+static void inline cRasterPixels(PIXEL_T *dst, PIXEL_T val, uint32_t offset,
+                                 int32_t len) {
+  dst += offset;
 
-template<typename PIXEL_T>
-static void inline cRasterPixels(PIXEL_T* dst, PIXEL_T val, uint32_t offset, int32_t len)
-{
-    dst += offset;
-
-    //fix the misaligned memory
-    auto alignOffset = (long long) dst % 8;
-    if (alignOffset > 0) {
-        if (sizeof(PIXEL_T) == 4) alignOffset /= 4;
-        else if (sizeof(PIXEL_T) == 1) alignOffset = 8 - alignOffset;
-        while (alignOffset > 0 && len > 0) {
-            *dst++ = val;
-            --len;
-            --alignOffset;
-        }
+  // fix the misaligned memory
+  auto alignOffset = (long long)dst % 8;
+  if (alignOffset > 0) {
+    if (sizeof(PIXEL_T) == 4)
+      alignOffset /= 4;
+    else if (sizeof(PIXEL_T) == 1)
+      alignOffset = 8 - alignOffset;
+    while (alignOffset > 0 && len > 0) {
+      *dst++ = val;
+      --len;
+      --alignOffset;
     }
+  }
 
-    //64bits faster clear
-    if ((sizeof(PIXEL_T) == 4)) {
-        auto val64 = (uint64_t(val) << 32) | uint64_t(val);
-        while (len > 1) {
-            *reinterpret_cast<uint64_t*>(dst) = val64;
-            len -= 2;
-            dst += 2;
-        }
-    } else if (sizeof(PIXEL_T) == 1) {
-        auto val32 = (uint32_t(val) << 24) | (uint32_t(val) << 16) | (uint32_t(val) << 8) | uint32_t(val);
-        auto val64 = (uint64_t(val32) << 32) | val32;
-        while (len > 7) {
-            *reinterpret_cast<uint64_t*>(dst) = val64;
-            len -= 8;
-            dst += 8;
-        }
+  // 64bits faster clear
+  if ((sizeof(PIXEL_T) == 4)) {
+    auto val64 = (uint64_t(val) << 32) | uint64_t(val);
+    while (len > 1) {
+      *reinterpret_cast<uint64_t *>(dst) = val64;
+      len -= 2;
+      dst += 2;
     }
+  } else if (sizeof(PIXEL_T) == 1) {
+    auto val32 = (uint32_t(val) << 24) | (uint32_t(val) << 16) |
+                 (uint32_t(val) << 8) | uint32_t(val);
+    auto val64 = (uint64_t(val32) << 32) | val32;
+    while (len > 7) {
+      *reinterpret_cast<uint64_t *>(dst) = val64;
+      len -= 8;
+      dst += 8;
+    }
+  }
 
-    //leftovers
-    while (len--) *dst++ = val;
+  // leftovers
+  while (len--)
+    *dst++ = val;
 }
 
+static bool inline cRasterTranslucentRle(SwSurface *surface, const SwRle *rle,
+                                         const RenderRegion &bbox,
+                                         const RenderColor &c) {
+  const SwSpan *end;
+  int32_t x, len;
 
-static bool inline cRasterTranslucentRle(SwSurface* surface, const SwRle* rle, const RenderRegion& bbox, const RenderColor& c)
-{
-    const SwSpan* end;
-    int32_t x, len;
-
-    //32bit channels
-    if (surface->channelSize == sizeof(uint32_t)) {
-        auto color = surface->join(c.r, c.g, c.b, c.a);
-        uint32_t src;
-        for (auto span = rle->fetch(bbox, &end); span < end; ++span) {
-            if (!span->fetch(bbox, x, len)) continue;
-            auto dst = &surface->buf32[span->y * surface->stride + x];
-            if (span->coverage < 255) src = ALPHA_BLEND(color, span->coverage);
-            else src = color;
-            auto ialpha = IA(src);
-            for (auto x = 0; x < len; ++x, ++dst) {
-                *dst = src + ALPHA_BLEND(*dst, ialpha);
-            }
-        }
-    //8bit grayscale
-    } else if (surface->channelSize == sizeof(uint8_t)) {
-        uint8_t src;
-        for (auto span = rle->fetch(bbox, &end); span < end; ++span) {
-            if (!span->fetch(bbox, x, len)) continue;
-            auto dst = &surface->buf8[span->y * surface->stride + x];
-            if (span->coverage < 255) src = MULTIPLY(span->coverage, c.a);
-            else src = c.a;
-            auto ialpha = ~c.a;
-            for (auto x = 0; x < len; ++x, ++dst) {
-                *dst = src + MULTIPLY(*dst, ialpha);
-            }
-        }
+  // 32bit channels
+  if (surface->channelSize == sizeof(uint32_t)) {
+    auto color = surface->join(c.r, c.g, c.b, c.a);
+    uint32_t src;
+    for (auto span = rle->fetch(bbox, &end); span < end; ++span) {
+      if (!span->fetch(bbox, x, len))
+        continue;
+      auto dst = &surface->buf32[span->y * surface->stride + x];
+      if (span->coverage < 255)
+        src = ALPHA_BLEND(color, span->coverage);
+      else
+        src = color;
+      auto ialpha = IA(src);
+      for (auto x = 0; x < len; ++x, ++dst) {
+        *dst = src + ALPHA_BLEND(*dst, ialpha);
+      }
     }
-    return true;
+    // 8bit grayscale
+  } else if (surface->channelSize == sizeof(uint8_t)) {
+    uint8_t src;
+    for (auto span = rle->fetch(bbox, &end); span < end; ++span) {
+      if (!span->fetch(bbox, x, len))
+        continue;
+      auto dst = &surface->buf8[span->y * surface->stride + x];
+      if (span->coverage < 255)
+        src = MULTIPLY(span->coverage, c.a);
+      else
+        src = c.a;
+      auto ialpha = ~c.a;
+      for (auto x = 0; x < len; ++x, ++dst) {
+        *dst = src + MULTIPLY(*dst, ialpha);
+      }
+    }
+  }
+  return true;
 }
 
-
-static bool inline cRasterTranslucentRect(SwSurface* surface, const RenderRegion& bbox, const RenderColor& c)
-{
-    //32bits channels
-    if (surface->channelSize == sizeof(uint32_t)) {
-        auto color = surface->join(c.r, c.g, c.b, c.a);
-        auto buffer = surface->buf32 + (bbox.min.y * surface->stride) + bbox.min.x;
-        auto ialpha = 255 - c.a;
-        for (uint32_t y = 0; y < bbox.h(); ++y) {
-            auto dst = &buffer[y * surface->stride];
-            for (uint32_t x = 0; x < bbox.w(); ++x, ++dst) {
-                *dst = color + ALPHA_BLEND(*dst, ialpha);
-            }
-        }
-    //8bit grayscale
-    } else if (surface->channelSize == sizeof(uint8_t)) {
-        auto buffer = surface->buf8 + (bbox.min.y * surface->stride) + bbox.min.x;
-        auto ialpha = ~c.a;
-        for (uint32_t y = 0; y < bbox.h(); ++y) {
-            auto dst = &buffer[y * surface->stride];
-            for (uint32_t x = 0; x < bbox.w(); ++x, ++dst) {
-                *dst = c.a + MULTIPLY(*dst, ialpha);
-            }
-        }
+static bool inline cRasterTranslucentRect(SwSurface *surface,
+                                          const RenderRegion &bbox,
+                                          const RenderColor &c) {
+  // 32bits channels
+  if (surface->channelSize == sizeof(uint32_t)) {
+    auto color = surface->join(c.r, c.g, c.b, c.a);
+    auto buffer = surface->buf32 + (bbox.min.y * surface->stride) + bbox.min.x;
+    auto ialpha = 255 - c.a;
+    for (uint32_t y = 0; y < bbox.h(); ++y) {
+      auto dst = &buffer[y * surface->stride];
+      for (uint32_t x = 0; x < bbox.w(); ++x, ++dst) {
+        *dst = color + ALPHA_BLEND(*dst, ialpha);
+      }
     }
-    return true;
+    // 8bit grayscale
+  } else if (surface->channelSize == sizeof(uint8_t)) {
+    auto buffer = surface->buf8 + (bbox.min.y * surface->stride) + bbox.min.x;
+    auto ialpha = ~c.a;
+    for (uint32_t y = 0; y < bbox.h(); ++y) {
+      auto dst = &buffer[y * surface->stride];
+      for (uint32_t x = 0; x < bbox.w(); ++x, ++dst) {
+        *dst = c.a + MULTIPLY(*dst, ialpha);
+      }
+    }
+  }
+  return true;
 }
-
 
 static bool inline cRasterABGRtoARGB(RenderSurface* surface)
 {
-    TVGLOG("SW_ENGINE", "Convert ColorSpace ABGR - ARGB [Size: %d x %d]", surface->w, surface->h);
+    TVGLOG("SW_ENGINE", "Convert ColorSpace ABGR -> ARGB [Size: %d x %d]", surface->w, surface->h);
 
-    //64bits faster converting
+    // ABGR: A(24) B(16) G(8) R(0) -> ARGB: A(24) R(16) G(8) B(0)
+    // Swap R(0) <-> B(16), keep A(24) and G(8)
     if (surface->w % 2 == 0) {
         auto buffer = reinterpret_cast<uint64_t*>(surface->buf32);
         for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride / 2) {
             auto dst = buffer;
             for (uint32_t x = 0; x < surface->w / 2; ++x, ++dst) {
                 auto c = *dst;
-                //flip Blue, Red channels
-                *dst = (c & 0xff000000ff000000) + ((c & 0x00ff000000ff0000) >> 16) + (c & 0x0000ff000000ff00) + ((c & 0x000000ff000000ff) << 16);
+                *dst = (c & 0xff00ff00ff00ff00ULL) | ((c & 0x00ff000000ff0000ULL) >> 16) | ((c & 0x000000ff000000ffULL) << 16);
             }
         }
-    //default converting
     } else {
         auto buffer = surface->buf32;
         for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride) {
             auto dst = buffer;
             for (uint32_t x = 0; x < surface->w; ++x, ++dst) {
                 auto c = *dst;
-                //flip Blue, Red channels
-                *dst = (c & 0xff000000) + ((c & 0x00ff0000) >> 16) + (c & 0x0000ff00) + ((c & 0x000000ff) << 16);
+                *dst = (c & 0xff00ff00) | ((c & 0x00ff0000) >> 16) | ((c & 0x000000ff) << 16);
             }
         }
     }
@@ -190,6 +195,102 @@ static bool inline cRasterABGRtoARGB(RenderSurface* surface)
 
 static bool inline cRasterARGBtoABGR(RenderSurface* surface)
 {
-    //exactly same with ABGRtoARGB
+    // Symmetric with ABGR->ARGB (same R<->B swap)
     return cRasterABGRtoARGB(surface);
+}
+
+
+static bool inline cRasterABGRtoBGRA(RenderSurface* surface)
+{
+    TVGLOG("SW_ENGINE", "Convert ColorSpace ABGR -> BGRA [Size: %d x %d]", surface->w, surface->h);
+
+    // ABGR: A(24) B(16) G(8) R(0) -> BGRA: B(24) G(16) R(8) A(0)
+    // Left rotate by 8 bits: (c << 8) | (c >> 24)
+    if (surface->w % 2 == 0) {
+        auto buffer = reinterpret_cast<uint64_t*>(surface->buf32);
+        for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride / 2) {
+            auto dst = buffer;
+            for (uint32_t x = 0; x < surface->w / 2; ++x, ++dst) {
+                auto c = *dst;
+                *dst = ((c << 8) & 0xffffff00ffffff00ULL) | ((c >> 24) & 0x000000ff000000ffULL);
+            }
+        }
+    } else {
+        auto buffer = surface->buf32;
+        for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride) {
+            auto dst = buffer;
+            for (uint32_t x = 0; x < surface->w; ++x, ++dst) {
+                auto c = *dst;
+                *dst = (c << 8) | (c >> 24);
+            }
+        }
+    }
+    return true;
+}
+
+
+static bool inline cRasterBGRAtoABGR(RenderSurface* surface)
+{
+    TVGLOG("SW_ENGINE", "Convert ColorSpace BGRA -> ABGR [Size: %d x %d]", surface->w, surface->h);
+
+    // BGRA: B(24) G(16) R(8) A(0) -> ABGR: A(24) B(16) G(8) R(0)
+    // Right rotate by 8 bits: (c >> 8) | (c << 24)
+    if (surface->w % 2 == 0) {
+        auto buffer = reinterpret_cast<uint64_t*>(surface->buf32);
+        for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride / 2) {
+            auto dst = buffer;
+            for (uint32_t x = 0; x < surface->w / 2; ++x, ++dst) {
+                auto c = *dst;
+                *dst = ((c >> 8) & 0x00ffffff00ffffffULL) | ((c << 24) & 0xff000000ff000000ULL);
+            }
+        }
+    } else {
+        auto buffer = surface->buf32;
+        for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride) {
+            auto dst = buffer;
+            for (uint32_t x = 0; x < surface->w; ++x, ++dst) {
+                auto c = *dst;
+                *dst = (c >> 8) | (c << 24);
+            }
+        }
+    }
+    return true;
+}
+
+
+static bool inline cRasterARGBtoBGRA(RenderSurface* surface)
+{
+    TVGLOG("SW_ENGINE", "Convert ColorSpace ARGB -> BGRA [Size: %d x %d]", surface->w, surface->h);
+
+    // ARGB: A(24) R(16) G(8) B(0) -> BGRA: B(24) G(16) R(8) A(0)
+    // Full byte reversal: swap bytes 0<->3 and 1<->2
+    if (surface->w % 2 == 0) {
+        auto buffer = reinterpret_cast<uint64_t*>(surface->buf32);
+        for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride / 2) {
+            auto dst = buffer;
+            for (uint32_t x = 0; x < surface->w / 2; ++x, ++dst) {
+                auto c = *dst;
+                *dst = ((c & 0x000000ff000000ffULL) << 24) | ((c & 0x0000ff000000ff00ULL) << 8) |
+                       ((c & 0x00ff000000ff0000ULL) >> 8)  | ((c & 0xff000000ff000000ULL) >> 24);
+            }
+        }
+    } else {
+        auto buffer = surface->buf32;
+        for (uint32_t y = 0; y < surface->h; ++y, buffer += surface->stride) {
+            auto dst = buffer;
+            for (uint32_t x = 0; x < surface->w; ++x, ++dst) {
+                auto c = *dst;
+                *dst = ((c & 0x000000ff) << 24) | ((c & 0x0000ff00) << 8) |
+                       ((c & 0x00ff0000) >> 8)  | ((c & 0xff000000) >> 24);
+            }
+        }
+    }
+    return true;
+}
+
+
+static bool inline cRasterBGRAtoARGB(RenderSurface* surface)
+{
+    // Symmetric with ARGB->BGRA (same byte reversal)
+    return cRasterARGBtoBGRA(surface);
 }
