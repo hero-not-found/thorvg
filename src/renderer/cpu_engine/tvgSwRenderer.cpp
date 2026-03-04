@@ -359,7 +359,7 @@ void SwRenderer::clearCompositors()
 bool SwRenderer::postRender()
 {
     //Unmultiply alpha if needed
-    if (surface->cs == ColorSpace::ABGR8888S || surface->cs == ColorSpace::ARGB8888S) {
+    if (surface->cs == ColorSpace::ABGR8888S || surface->cs == ColorSpace::ARGB8888S || surface->cs == ColorSpace::BGRA8888S) {
         rasterUnpremultiply(surface);
     }
 
