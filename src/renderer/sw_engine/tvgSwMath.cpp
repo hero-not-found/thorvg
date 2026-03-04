@@ -21,7 +21,9 @@
  */
 
 #include "tvgMath.h"
+#include "tvgEsp32s3.h"
 #include "tvgSwCommon.h"
+#include "tvgSwEsp32s3.h"
 
 
 /************************************************************************/
@@ -32,7 +34,6 @@ static float TO_RADIAN(int64_t angle)
 {
     return (float(angle) / 65536.0f) * (MATH_PI / 180.0f);
 }
-
 
 /************************************************************************/
 /* External Class Implementation                                        */
@@ -46,6 +47,12 @@ int64_t mathMean(int64_t angle1, int64_t angle2)
 
 int mathCubicAngle(const SwPoint* base, int64_t& angleIn, int64_t& angleMid, int64_t& angleOut)
 {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    constexpr int64_t STROKE_CUBIC_ANGLE_LIMIT = SW_ANGLE_PI / 4;
+#else
+    constexpr int64_t STROKE_CUBIC_ANGLE_LIMIT = SW_ANGLE_PI / 8;
+#endif
+
     auto d1 = base[2] - base[3];
     auto d2 = base[1] - base[2];
     auto d3 = base[0] - base[1];
@@ -90,7 +97,7 @@ int mathCubicAngle(const SwPoint* base, int64_t& angleIn, int64_t& angleMid, int
     auto theta1 = abs(mathDiff(angleIn, angleMid));
     auto theta2 = abs(mathDiff(angleMid, angleOut));
 
-    if ((theta1 < (SW_ANGLE_PI / 8)) && (theta2 < (SW_ANGLE_PI / 8))) return 0; //small size
+    if ((theta1 < STROKE_CUBIC_ANGLE_LIMIT) && (theta2 < STROKE_CUBIC_ANGLE_LIMIT)) return 0; //small size
     return 1;
 }
 
@@ -201,8 +208,8 @@ int64_t mathLength(const SwPoint& pt)
     if (pt.zero()) return 0;
 
     //trivial case
-    if (pt.x == 0) return abs(pt.y);
-    if (pt.y == 0) return abs(pt.x);
+    if (pt.x == 0) return tvgSwAbsI32(pt.y);
+    if (pt.y == 0) return tvgSwAbsI32(pt.x);
 
     auto v = pt.toPoint();
     //return static_cast<int64_t>(sqrtf(v.x * v.x + v.y * v.y) * 65536.0f);
@@ -263,6 +270,12 @@ int64_t mathDiff(int64_t angle1, int64_t angle2)
 
 SwPoint mathTransform(const Point* to, const Matrix& transform)
 {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    if (tvg::esp32s3Affine(transform)) {
+        return {TO_SWCOORD(tvg::esp32s3AffineX(*to, transform)), TO_SWCOORD(tvg::esp32s3AffineY(*to, transform))};
+    }
+#endif
+
     auto tx = to->x * transform.e11 + to->y * transform.e12 + transform.e13;
     auto ty = to->x * transform.e21 + to->y * transform.e22 + transform.e23;
 
@@ -285,10 +298,10 @@ bool mathUpdateOutlineBBox(const SwOutline* outline, const RenderRegion& clipBox
     auto yMax = pt->y;
 
     for (++pt; pt < outline->pts.end(); ++pt) {
-        if (xMin > pt->x) xMin = pt->x;
-        if (xMax < pt->x) xMax = pt->x;
-        if (yMin > pt->y) yMin = pt->y;
-        if (yMax < pt->y) yMax = pt->y;
+        xMin = tvgSwMinI32(xMin, pt->x);
+        xMax = tvgSwMaxI32(xMax, pt->x);
+        yMin = tvgSwMinI32(yMin, pt->y);
+        yMax = tvgSwMaxI32(yMax, pt->y);
     }
 
     if (fastTrack) {

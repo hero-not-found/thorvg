@@ -22,6 +22,7 @@
 
 #include "tvgMath.h"
 #include "tvgArray.h"
+#include "tvgEsp32s3.h"
 
 #define BEZIER_EPSILON 1e-2f
 
@@ -160,6 +161,26 @@ float atan2(float y, float x)
 
 bool inverse(const Matrix* m, Matrix* out)
 {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    if (esp32s3Affine(*m)) {
+        auto det = m->e11 * m->e22 - m->e12 * m->e21;
+        auto invDet = 1.0f / det;
+        if (std::isinf(invDet)) return false;
+
+        out->e11 = m->e22 * invDet;
+        out->e12 = -m->e12 * invDet;
+        out->e13 = fmaf(m->e12, m->e23, -m->e22 * m->e13) * invDet;
+        out->e21 = -m->e21 * invDet;
+        out->e22 = m->e11 * invDet;
+        out->e23 = fmaf(m->e21, m->e13, -m->e11 * m->e23) * invDet;
+        out->e31 = 0.0f;
+        out->e32 = 0.0f;
+        out->e33 = 1.0f;
+
+        return true;
+    }
+#endif
+
     auto det = m->e11 * (m->e22 * m->e33 - m->e32 * m->e23) -
                m->e12 * (m->e21 * m->e33 - m->e23 * m->e31) +
                m->e13 * (m->e21 * m->e32 - m->e22 * m->e31);
@@ -211,6 +232,23 @@ Matrix operator*(const Matrix& lhs, const Matrix& rhs)
 {
     Matrix m;
 
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    if (esp32s3Affine(lhs) && esp32s3Affine(rhs)) {
+        m.e11 = fmaf(lhs.e12, rhs.e21, lhs.e11 * rhs.e11);
+        m.e12 = fmaf(lhs.e12, rhs.e22, lhs.e11 * rhs.e12);
+        m.e13 = fmaf(lhs.e12, rhs.e23, fmaf(lhs.e11, rhs.e13, lhs.e13));
+
+        m.e21 = fmaf(lhs.e22, rhs.e21, lhs.e21 * rhs.e11);
+        m.e22 = fmaf(lhs.e22, rhs.e22, lhs.e21 * rhs.e12);
+        m.e23 = fmaf(lhs.e22, rhs.e23, fmaf(lhs.e21, rhs.e13, lhs.e23));
+
+        m.e31 = 0.0f;
+        m.e32 = 0.0f;
+        m.e33 = 1.0f;
+        return m;
+    }
+#endif
+
     m.e11 = lhs.e11 * rhs.e11 + lhs.e12 * rhs.e21 + lhs.e13 * rhs.e31;
     m.e12 = lhs.e11 * rhs.e12 + lhs.e12 * rhs.e22 + lhs.e13 * rhs.e32;
     m.e13 = lhs.e11 * rhs.e13 + lhs.e12 * rhs.e23 + lhs.e13 * rhs.e33;
@@ -240,6 +278,13 @@ bool operator==(const Matrix& lhs, const Matrix& rhs)
 
 void operator*=(Point& pt, const Matrix& m)
 {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    if (esp32s3Affine(m)) {
+        pt = esp32s3TransformPoint(pt, m);
+        return;
+    }
+#endif
+
     auto tx = pt.x * m.e11 + pt.y * m.e12 + m.e13;
     auto ty = pt.x * m.e21 + pt.y * m.e22 + m.e23;
     pt.x = tx;
@@ -249,6 +294,10 @@ void operator*=(Point& pt, const Matrix& m)
 
 Point operator*(const Point& pt, const Matrix& m)
 {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    if (esp32s3Affine(m)) return esp32s3TransformPoint(pt, m);
+#endif
+
     auto tx = pt.x * m.e11 + pt.y * m.e12 + m.e13;
     auto ty = pt.x * m.e21 + pt.y * m.e22 + m.e23;
     return {tx, ty};

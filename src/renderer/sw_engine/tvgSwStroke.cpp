@@ -23,6 +23,84 @@
 #include "tvgSwCommon.h"
 
 /************************************************************************/
+/* Stroke Profiling for ESP32                                           */
+/************************************************************************/
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
+#define TVG_STROKE_PROFILE_ENABLED 1
+
+#if TVG_STROKE_PROFILE_ENABLED
+
+static inline uint32_t stroke_get_ccount()
+{
+    uint32_t ccount;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(ccount));
+    return ccount;
+}
+
+static uint32_t g_tvg_stroke_line_cycles = 0;
+static uint32_t g_tvg_stroke_cubic_cycles = 0;
+static uint32_t g_tvg_stroke_corner_cycles = 0;
+static uint32_t g_tvg_stroke_cap_cycles = 0;
+static uint32_t g_tvg_stroke_grow_cycles = 0;
+
+static uint32_t g_tvg_stroke_line_calls = 0;
+static uint32_t g_tvg_stroke_cubic_calls = 0;
+static uint32_t g_tvg_stroke_corner_calls = 0;
+static uint32_t g_tvg_stroke_cap_calls = 0;
+static uint32_t g_tvg_stroke_grow_calls = 0;
+
+#define TVG_STROKE_PROFILE_DECLARE() uint32_t _stroke_profile_start = 0
+#define TVG_STROKE_PROFILE_START() _stroke_profile_start = stroke_get_ccount()
+#define TVG_STROKE_PROFILE_END(cycles, count) do { \
+    cycles += stroke_get_ccount() - _stroke_profile_start; \
+    count++; \
+} while (0)
+
+extern "C" void tvg_stroke_profile_get_stats(uint32_t* stats)
+{
+    stats[0] = g_tvg_stroke_line_cycles / 240;
+    stats[1] = g_tvg_stroke_cubic_cycles / 240;
+    stats[2] = g_tvg_stroke_corner_cycles / 240;
+    stats[3] = g_tvg_stroke_cap_cycles / 240;
+    stats[4] = g_tvg_stroke_grow_cycles / 240;
+    stats[5] = g_tvg_stroke_line_calls;
+    stats[6] = g_tvg_stroke_cubic_calls;
+    stats[7] = g_tvg_stroke_corner_calls;
+    stats[8] = g_tvg_stroke_cap_calls;
+    stats[9] = g_tvg_stroke_grow_calls;
+}
+
+extern "C" void tvg_stroke_profile_reset(void)
+{
+    g_tvg_stroke_line_cycles = 0;
+    g_tvg_stroke_cubic_cycles = 0;
+    g_tvg_stroke_corner_cycles = 0;
+    g_tvg_stroke_cap_cycles = 0;
+    g_tvg_stroke_grow_cycles = 0;
+    g_tvg_stroke_line_calls = 0;
+    g_tvg_stroke_cubic_calls = 0;
+    g_tvg_stroke_corner_calls = 0;
+    g_tvg_stroke_cap_calls = 0;
+    g_tvg_stroke_grow_calls = 0;
+}
+
+#else
+#define TVG_STROKE_PROFILE_DECLARE()
+#define TVG_STROKE_PROFILE_START()
+#define TVG_STROKE_PROFILE_END(cycles, count)
+extern "C" void tvg_stroke_profile_get_stats(uint32_t* stats) { for (int i = 0; i < 10; ++i) stats[i] = 0; }
+extern "C" void tvg_stroke_profile_reset(void) {}
+#endif
+
+#else
+#define TVG_STROKE_PROFILE_DECLARE()
+#define TVG_STROKE_PROFILE_START()
+#define TVG_STROKE_PROFILE_END(cycles, count)
+extern "C" void tvg_stroke_profile_get_stats(uint32_t* stats) { for (int i = 0; i < 10; ++i) stats[i] = 0; }
+extern "C" void tvg_stroke_profile_reset(void) {}
+#endif
+
+/************************************************************************/
 /* Internal Class Implementation                                        */
 /************************************************************************/
 
@@ -36,6 +114,13 @@ static inline int64_t SIDE_TO_ROTATE(const int32_t s)
     return (SW_ANGLE_PI2 - static_cast<int64_t>(s) * SW_ANGLE_PI);
 }
 
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+static constexpr int STROKE_CUBIC_MAX_SPLIT_DEPTH = 24;
+static constexpr int STROKE_CUBIC_TINY_DEPTH = 3;
+static constexpr int STROKE_CUBIC_TINY_WIDTH_FACTOR = 6;
+static constexpr int32_t STROKE_CUBIC_TINY_MIN_SPAN = 128;   // 2px in SW units.
+#endif
+
 
 static inline void SCALE(const SwStroke& stroke, SwPoint& pt)
 {
@@ -44,11 +129,85 @@ static inline void SCALE(const SwStroke& stroke, SwPoint& pt)
 }
 
 
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+static constexpr int STROKE_TRIG_LUT_BITS = 10;
+static constexpr int STROKE_TRIG_LUT_SIZE = (1 << STROKE_TRIG_LUT_BITS);
+static constexpr int STROKE_TRIG_LUT_MASK = STROKE_TRIG_LUT_SIZE - 1;
+static constexpr int64_t STROKE_ANGLE_FULL = 360LL * 65536LL;
+
+static inline const float* _strokeSinLut()
+{
+    static float table[STROKE_TRIG_LUT_SIZE + 1];
+    static bool initialized = []() {
+        constexpr float SCALE = (2.0f * MATH_PI) / float(STROKE_TRIG_LUT_SIZE);
+        for (int i = 0; i <= STROKE_TRIG_LUT_SIZE; ++i) {
+            table[i] = sinf(float(i) * SCALE);
+        }
+        return true;
+    }();
+    (void) initialized;
+    return table;
+}
+
+static inline void _strokeFastSinCos(int64_t angle, float& sinv, float& cosv)
+{
+    auto lut = _strokeSinLut();
+
+    auto norm = angle % STROKE_ANGLE_FULL;
+    if (norm < 0) norm += STROKE_ANGLE_FULL;
+
+    auto pos = static_cast<uint64_t>(norm) * STROKE_TRIG_LUT_SIZE;
+    auto idx = static_cast<uint32_t>(pos / STROKE_ANGLE_FULL);
+    auto rem = static_cast<uint32_t>(pos % STROKE_ANGLE_FULL);
+
+    auto t = float(rem) / float(STROKE_ANGLE_FULL);
+
+    auto s0 = lut[idx];
+    auto s1 = lut[idx + 1];
+    sinv = s0 + (s1 - s0) * t;
+
+    auto cidx = (idx + (STROKE_TRIG_LUT_SIZE >> 2)) & STROKE_TRIG_LUT_MASK;
+    auto cnext = (cidx + 1) & STROKE_TRIG_LUT_MASK;
+    auto c0 = lut[cidx];
+    auto c1 = (cidx == STROKE_TRIG_LUT_SIZE - 1) ? lut[0] : lut[cnext];
+    cosv = c0 + (c1 - c0) * t;
+}
+
+
+static inline SwPoint _strokePolarScaled(const SwStroke& stroke, int64_t radius, int64_t angle)
+{
+    float sinv, cosv;
+    _strokeFastSinCos(angle, sinv, cosv);
+
+    return {
+        static_cast<int32_t>(nearbyintf(float(radius) * cosv * stroke.sx)),
+        static_cast<int32_t>(nearbyintf(float(radius) * sinv * stroke.sy))
+    };
+}
+
+
+static inline SwPoint _strokePolar(int64_t radius, int64_t angle)
+{
+    float sinv, cosv;
+    _strokeFastSinCos(angle, sinv, cosv);
+
+    return {
+        static_cast<int32_t>(nearbyintf(float(radius) * cosv)),
+        static_cast<int32_t>(nearbyintf(float(radius) * sinv))
+    };
+}
+#endif
+
+
 static void _growBorder(SwStrokeBorder* border, uint32_t newPts)
 {
-    if (border->pts.count + newPts <= border->pts.reserved) return;
-    border->pts.grow(newPts * 20);
-    border->tags = tvg::realloc<uint8_t>(border->tags, border->pts.reserved);      //align the pts / tags memory size
+    TVG_STROKE_PROFILE_DECLARE();
+    TVG_STROKE_PROFILE_START();
+    if (border->pts.count + newPts > border->pts.reserved) {
+        border->pts.grow(newPts * 20);
+        border->tags = tvg::realloc<uint8_t>(border->tags, border->pts.reserved);      //align the pts / tags memory size
+    }
+    TVG_STROKE_PROFILE_END(g_tvg_stroke_grow_cycles, g_tvg_stroke_grow_calls);
 }
 
 
@@ -118,9 +277,14 @@ static void _borderCubicTo(SwStrokeBorder* border, const SwPoint& ctrl1, const S
 static void _borderArcTo(SwStrokeBorder* border, const SwPoint& center, int64_t radius, int64_t angleStart, int64_t angleDiff, SwStroke& stroke)
 {
     constexpr int64_t ARC_CUBIC_ANGLE = SW_ANGLE_PI / 2;
-    SwPoint a = {static_cast<int32_t>(radius), 0};
+    SwPoint a;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    a = _strokePolarScaled(stroke, radius, angleStart);
+#else
+    a = {static_cast<int32_t>(radius), 0};
     mathRotate(a, angleStart);
     SCALE(stroke, a);
+#endif
     a += center;
 
     auto total = angleDiff;
@@ -139,22 +303,37 @@ static void _borderArcTo(SwStrokeBorder* border, const SwPoint& center, int64_t 
         theta >>= 1;
 
         //compute end point
-        SwPoint b = {static_cast<int32_t>(radius), 0};
+        SwPoint b;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        b = _strokePolarScaled(stroke, radius, next);
+#else
+        b = {static_cast<int32_t>(radius), 0};
         mathRotate(b, next);
         SCALE(stroke, b);
+#endif
         b += center;
 
         //compute first and second control points
         auto length = mathMulDiv(radius, mathSin(theta) * 4, (0x10000L + mathCos(theta)) * 3);
 
-        SwPoint a2 = {static_cast<int32_t>(length), 0};
+        SwPoint a2;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        a2 = _strokePolarScaled(stroke, length, angle + rotate);
+#else
+        a2 = {static_cast<int32_t>(length), 0};
         mathRotate(a2, angle + rotate);
         SCALE(stroke, a2);
+#endif
         a2 += a;
 
-        SwPoint b2 = {static_cast<int32_t>(length), 0};
+        SwPoint b2;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        b2 = _strokePolarScaled(stroke, length, next - rotate);
+#else
+        b2 = {static_cast<int32_t>(length), 0};
         mathRotate(b2, next - rotate);
         SCALE(stroke, b2);
+#endif
         b2 += b;
 
         //add cubic arc
@@ -241,27 +420,41 @@ static void _outside(SwStroke& stroke, int32_t side, int64_t lineLength)
 
         //this is a bevel (broken angle)
         if (bevel) {
-            SwPoint delta = {static_cast<int32_t>(stroke.width), 0};
+            SwPoint delta;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+            delta = _strokePolarScaled(stroke, stroke.width, stroke.angleOut + rotate);
+#else
+            delta = {static_cast<int32_t>(stroke.width), 0};
             mathRotate(delta, stroke.angleOut + rotate);
             SCALE(stroke, delta);
+#endif
             delta += stroke.center;
             border->movable = false;
             _borderLineTo(border, delta, false);
         //this is a miter (intersection)
         } else {
             auto length = mathDivide(stroke.width, thcos);
-            SwPoint delta = {static_cast<int32_t>(length), 0};
+            SwPoint delta;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+            delta = _strokePolarScaled(stroke, length, phi);
+#else
+            delta = {static_cast<int32_t>(length), 0};
             mathRotate(delta, phi);
             SCALE(stroke, delta);
+#endif
             delta += stroke.center;
             _borderLineTo(border, delta, false);
 
             /* Now add and end point
                Only needed if not lineto (lineLength is zero for curves) */
             if (lineLength == 0) {
+                #ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+                delta = _strokePolarScaled(stroke, stroke.width, stroke.angleOut + rotate);
+                #else
                 delta = {static_cast<int32_t>(stroke.width), 0};
                 mathRotate(delta, stroke.angleOut + rotate);
                 SCALE(stroke, delta);
+                #endif
                 delta += stroke.center;
                 _borderLineTo(border, delta, false);
             }
@@ -288,18 +481,26 @@ static void _inside(SwStroke& stroke, int32_t side, int64_t lineLength)
     auto rotate = SIDE_TO_ROTATE(side);
 
     if (!intersect) {
+        #ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        delta = _strokePolarScaled(stroke, stroke.width, stroke.angleOut + rotate);
+        #else
         delta = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta, stroke.angleOut + rotate);
         SCALE(stroke, delta);
+        #endif
         delta += stroke.center;
         border->movable = false;
     } else {
         //compute median angle
         auto phi = stroke.angleIn + theta;
         auto thcos = mathCos(theta);
+        #ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        delta = _strokePolarScaled(stroke, mathDivide(stroke.width, thcos), phi + rotate);
+        #else
         delta = {static_cast<int32_t>(mathDivide(stroke.width, thcos)), 0};
         mathRotate(delta, phi + rotate);
         SCALE(stroke, delta);
+        #endif
         delta += stroke.center;
     }
 
@@ -309,10 +510,15 @@ static void _inside(SwStroke& stroke, int32_t side, int64_t lineLength)
 
 void _processCorner(SwStroke& stroke, int64_t lineLength)
 {
+    TVG_STROKE_PROFILE_DECLARE();
+    TVG_STROKE_PROFILE_START();
     auto turn = mathDiff(stroke.angleIn, stroke.angleOut);
 
     //no specific corner processing is required if the turn is 0
-    if (turn == 0) return;
+    if (turn == 0) {
+        TVG_STROKE_PROFILE_END(g_tvg_stroke_corner_cycles, g_tvg_stroke_corner_calls);
+        return;
+    }
 
     //when we turn to the right, the inside side is 0
     int32_t inside = 0;
@@ -325,14 +531,20 @@ void _processCorner(SwStroke& stroke, int64_t lineLength)
 
     //process the outside
     _outside(stroke, 1 - inside, lineLength);
+    TVG_STROKE_PROFILE_END(g_tvg_stroke_corner_cycles, g_tvg_stroke_corner_calls);
 }
 
 
 void _firstSubPath(SwStroke& stroke, int64_t startAngle, int64_t lineLength)
 {
-    SwPoint delta = {static_cast<int32_t>(stroke.width), 0};
+    SwPoint delta;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    delta = _strokePolarScaled(stroke, stroke.width, startAngle + SW_ANGLE_PI2);
+#else
+    delta = {static_cast<int32_t>(stroke.width), 0};
     mathRotate(delta, startAngle + SW_ANGLE_PI2);
     SCALE(stroke, delta);
+#endif
 
     auto pt = stroke.center + delta;
     _borderMoveTo(stroke.borders[0], pt);
@@ -350,13 +562,16 @@ void _firstSubPath(SwStroke& stroke, int64_t startAngle, int64_t lineLength)
 
 static void _lineTo(SwStroke& stroke, const SwPoint& to)
 {
+    TVG_STROKE_PROFILE_DECLARE();
+    TVG_STROKE_PROFILE_START();
     auto delta = to - stroke.center;
 
     //a zero-length lineto is a no-op
     if (delta.zero()) {
         //round and square caps are expected to be drawn as a dot even for zero-length lines
-        if (stroke.firstPt && stroke.cap != StrokeCap::Butt) _firstSubPath(stroke, 0, 0); 
-        return; 
+        if (stroke.firstPt && stroke.cap != StrokeCap::Butt) _firstSubPath(stroke, 0, 0);
+        TVG_STROKE_PROFILE_END(g_tvg_stroke_line_cycles, g_tvg_stroke_line_calls);
+        return;
     }
 
     /* The lineLength is used to determine the intersection of strokes outlines.
@@ -368,9 +583,13 @@ static void _lineTo(SwStroke& stroke, const SwPoint& to)
     auto lineLength = mathLength(delta);
     auto angle = mathAtan(delta);
 
+    #ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    delta = _strokePolarScaled(stroke, stroke.width, angle + SW_ANGLE_PI2);
+    #else
     delta = {static_cast<int32_t>(stroke.width), 0};
     mathRotate(delta, angle + SW_ANGLE_PI2);
     SCALE(stroke, delta);
+    #endif
 
     //process corner if necessary
     if (stroke.firstPt) {
@@ -394,13 +613,20 @@ static void _lineTo(SwStroke& stroke, const SwPoint& to)
     stroke.angleIn = angle;
     stroke.center = to;
     stroke.lineLength = lineLength;
+    TVG_STROKE_PROFILE_END(g_tvg_stroke_line_cycles, g_tvg_stroke_line_calls);
 }
 
 
 static void _cubicTo(SwStroke& stroke, const SwPoint& ctrl1, const SwPoint& ctrl2, const SwPoint& to)
 {
+    TVG_STROKE_PROFILE_DECLARE();
+    TVG_STROKE_PROFILE_START();
     SwPoint bezStack[37];   //TODO: static?
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    auto limit = bezStack + STROKE_CUBIC_MAX_SPLIT_DEPTH;
+#else
     auto limit = bezStack + 32;
+#endif
     auto arc = bezStack;
     auto firstArc = true;
     arc[0] = to;
@@ -418,6 +644,19 @@ static void _cubicTo(SwStroke& stroke, const SwPoint& ctrl1, const SwPoint& ctrl
 
         //valid size
         if (valid > 0 && arc < limit) {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+            auto depth = static_cast<int>((arc - bezStack) / 3);
+            if (depth >= STROKE_CUBIC_TINY_DEPTH) {
+                auto spanVec = arc[0] - arc[3];
+                auto spanX = (spanVec.x >= 0) ? static_cast<int64_t>(spanVec.x) : -static_cast<int64_t>(spanVec.x);
+                auto spanY = (spanVec.y >= 0) ? static_cast<int64_t>(spanVec.y) : -static_cast<int64_t>(spanVec.y);
+                auto span = (spanX > spanY) ? spanX : spanY;
+                auto tinySpanLimit = stroke.width * STROKE_CUBIC_TINY_WIDTH_FACTOR;
+                if (tinySpanLimit < STROKE_CUBIC_TINY_MIN_SPAN) tinySpanLimit = STROKE_CUBIC_TINY_MIN_SPAN;
+                if (span <= tinySpanLimit) valid = 0;
+            }
+#endif
+            if (valid <= 0) goto draw_arc;
             if (stroke.firstPt) stroke.angleIn = angleIn;
             mathSplitCubic(arc);
             arc += 3;
@@ -430,10 +669,12 @@ static void _cubicTo(SwStroke& stroke, const SwPoint& ctrl1, const SwPoint& ctrl
 
             //round and square caps are expected to be drawn as a dot even for zero-length lines
             if (stroke.firstPt && stroke.cap != StrokeCap::Butt) _firstSubPath(stroke, 0, 0);
+            TVG_STROKE_PROFILE_END(g_tvg_stroke_cubic_cycles, g_tvg_stroke_cubic_calls);
             return;
         }
 
         //small size
+    draw_arc:
         if (firstArc) {
             firstArc = false;
             //process corner if necessary
@@ -465,32 +706,75 @@ static void _cubicTo(SwStroke& stroke, const SwPoint& ctrl1, const SwPoint& ctrl
         int64_t alpha0 = 0;
 
         //compute direction of original arc
-        if (stroke.handleWideStrokes) {
-            alpha0 = mathAtan(arc[0] - arc[3]);
-        }
+        if (stroke.handleWideStrokes) alpha0 = mathAtan(arc[0] - arc[3]);
 
-        for (int side = 0; side < 2; ++side) {
-            auto border = stroke.borders[side];
-            auto rotate = SIDE_TO_ROTATE(side);
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        auto ctrl1Delta = _strokePolarScaled(stroke, length1, phi1 + SW_ANGLE_PI2);
+        auto ctrl2Delta = _strokePolarScaled(stroke, length2, phi2 + SW_ANGLE_PI2);
+        auto endDelta = _strokePolarScaled(stroke, stroke.width, angleOut + SW_ANGLE_PI2);
+#endif
 
-            //compute control points
-            SwPoint _ctrl1 = {static_cast<int32_t>(length1), 0};
-            mathRotate(_ctrl1, phi1 + rotate);
-            SCALE(stroke, _ctrl1);
-            _ctrl1 += arc[2];
+        if (!stroke.handleWideStrokes) {
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+            _borderCubicTo(stroke.borders[0], arc[2] + ctrl1Delta, arc[1] + ctrl2Delta, arc[0] + endDelta);
+            _borderCubicTo(stroke.borders[1], arc[2] - ctrl1Delta, arc[1] - ctrl2Delta, arc[0] - endDelta);
+#else
+            for (int side = 0; side < 2; ++side) {
+                auto rotate = SIDE_TO_ROTATE(side);
+                SwPoint _ctrl1 = {static_cast<int32_t>(length1), 0};
+                mathRotate(_ctrl1, phi1 + rotate);
+                SCALE(stroke, _ctrl1);
+                _ctrl1 += arc[2];
 
-            SwPoint _ctrl2 = {static_cast<int32_t>(length2), 0};
-            mathRotate(_ctrl2, phi2 + rotate);
-            SCALE(stroke, _ctrl2);
-            _ctrl2 += arc[1];
+                SwPoint _ctrl2 = {static_cast<int32_t>(length2), 0};
+                mathRotate(_ctrl2, phi2 + rotate);
+                SCALE(stroke, _ctrl2);
+                _ctrl2 += arc[1];
 
-            //compute end point
-            SwPoint end = {static_cast<int32_t>(stroke.width), 0};
-            mathRotate(end, angleOut + rotate);
-            SCALE(stroke, end);
-            end += arc[0];
+                SwPoint end = {static_cast<int32_t>(stroke.width), 0};
+                mathRotate(end, angleOut + rotate);
+                SCALE(stroke, end);
+                end += arc[0];
 
-            if (stroke.handleWideStrokes) {
+                _borderCubicTo(stroke.borders[side], _ctrl1, _ctrl2, end);
+            }
+#endif
+        } else {
+            for (int side = 0; side < 2; ++side) {
+                auto border = stroke.borders[side];
+
+                //compute control points
+                SwPoint _ctrl1, _ctrl2, end;
+
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+                if (side == 0) {
+                    _ctrl1 = arc[2] + ctrl1Delta;
+                    _ctrl2 = arc[1] + ctrl2Delta;
+                    end = arc[0] + endDelta;
+                } else {
+                    _ctrl1 = arc[2] - ctrl1Delta;
+                    _ctrl2 = arc[1] - ctrl2Delta;
+                    end = arc[0] - endDelta;
+                }
+#else
+                auto rotate = SIDE_TO_ROTATE(side);
+
+                _ctrl1 = {static_cast<int32_t>(length1), 0};
+                mathRotate(_ctrl1, phi1 + rotate);
+                SCALE(stroke, _ctrl1);
+                _ctrl1 += arc[2];
+
+                _ctrl2 = {static_cast<int32_t>(length2), 0};
+                mathRotate(_ctrl2, phi2 + rotate);
+                SCALE(stroke, _ctrl2);
+                _ctrl2 += arc[1];
+
+                end = {static_cast<int32_t>(stroke.width), 0};
+                mathRotate(end, angleOut + rotate);
+                SCALE(stroke, end);
+                end += arc[0];
+#endif
+
                 /* determine whether the border radius is greater than the radius of
                    curvature of the original arc */
                 auto start = border->pts.last();
@@ -508,8 +792,13 @@ static void _cubicTo(SwStroke& stroke, const SwPoint& ctrl1, const SwPoint& ctrl
                     auto sinB = abs(mathSin(beta - gamma));
                     auto alen = mathMulDiv(blen, sinA, sinB);
 
-                    SwPoint delta = {static_cast<int32_t>(alen), 0};
+                    SwPoint delta;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+                    delta = _strokePolar(alen, beta);
+#else
+                    delta = {static_cast<int32_t>(alen), 0};
                     mathRotate(delta, beta);
+#endif
                     delta += start;
 
                     //circumnavigate the negative sector backwards
@@ -522,33 +811,46 @@ static void _cubicTo(SwStroke& stroke, const SwPoint& ctrl1, const SwPoint& ctrl
                     _borderLineTo(border, end, false);
                     continue;
                 }
+                _borderCubicTo(border, _ctrl1, _ctrl2, end);
             }
-            _borderCubicTo(border, _ctrl1, _ctrl2, end);
         }
         arc -= 3;
         stroke.angleIn = angleOut;
     }
     stroke.center = to;
+    TVG_STROKE_PROFILE_END(g_tvg_stroke_cubic_cycles, g_tvg_stroke_cubic_calls);
 }
 
 
 static void _addCap(SwStroke& stroke, int64_t angle, int32_t side)
 {
+    TVG_STROKE_PROFILE_DECLARE();
+    TVG_STROKE_PROFILE_START();
     if (stroke.cap == StrokeCap::Square) {
         auto rotate = SIDE_TO_ROTATE(side);
         auto border = stroke.borders[side];
 
-        SwPoint delta = {static_cast<int32_t>(stroke.width), 0};
+        SwPoint delta, delta2;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        delta = _strokePolarScaled(stroke, stroke.width, angle);
+        delta2 = _strokePolarScaled(stroke, stroke.width, angle + rotate);
+#else
+        delta = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta, angle);
         SCALE(stroke, delta);
 
-        SwPoint delta2 = {static_cast<int32_t>(stroke.width), 0};
+        delta2 = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta2, angle + rotate);
         SCALE(stroke, delta2);
+#endif
         delta += stroke.center + delta2;
 
         _borderLineTo(border, delta, false);
 
+        #ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        delta = _strokePolarScaled(stroke, stroke.width, angle);
+        delta2 = _strokePolarScaled(stroke, stroke.width, angle - rotate);
+        #else
         delta = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta, angle);
         SCALE(stroke, delta);
@@ -556,6 +858,7 @@ static void _addCap(SwStroke& stroke, int64_t angle, int32_t side)
         delta2 = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta2, angle - rotate);
         SCALE(stroke, delta2);
+        #endif
         delta += delta2 + stroke.center;
 
         _borderLineTo(border, delta, false);
@@ -567,20 +870,30 @@ static void _addCap(SwStroke& stroke, int64_t angle, int32_t side)
         auto rotate = SIDE_TO_ROTATE(side);
         auto border = stroke.borders[side];
 
-        SwPoint delta = {static_cast<int32_t>(stroke.width), 0};
+        SwPoint delta;
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        delta = _strokePolarScaled(stroke, stroke.width, angle + rotate);
+#else
+        delta = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta, angle + rotate);
         SCALE(stroke, delta);
+#endif
         delta += stroke.center;
 
         _borderLineTo(border, delta, false);
 
+        #ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+        delta = _strokePolarScaled(stroke, stroke.width, angle - rotate);
+        #else
         delta = {static_cast<int32_t>(stroke.width), 0};
         mathRotate(delta, angle - rotate);
         SCALE(stroke, delta);
+        #endif
         delta += stroke.center;
 
         _borderLineTo(border, delta, false);
     }
+    TVG_STROKE_PROFILE_END(g_tvg_stroke_cap_cycles, g_tvg_stroke_cap_calls);
 }
 
 

@@ -109,6 +109,13 @@ if get_option('simd')
   elif host_machine.cpu().startswith('aarch')
     config_h.set10('THORVG_NEON_VECTOR_SUPPORT', true)
     simd_type = 'neon-aarch'
+  elif host_machine.cpu().startswith('esp32s3')
+    config_h.set10('THORVG_ESP32_VECTOR_SUPPORT', true)
+    config_h.set10('THORVG_ESP32S3_VECTOR_SUPPORT', true)
+    simd_type = 'esp32s3'
+  elif host_machine.cpu().startswith('esp32')
+    config_h.set10('THORVG_ESP32_VECTOR_SUPPORT', true)
+    simd_type = 'esp32'
   endif
 endif
 
