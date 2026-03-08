@@ -1701,7 +1701,9 @@ void rasterTranslucentPixel32(uint32_t* dst, uint32_t* src, uint32_t len, uint8_
     cRasterTranslucentPixels(dst, src, len, opacity);
 #endif
     TVG_RASTER_PROFILE_END(g_raster_blend_cycles, g_raster_blend_count);
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
     g_raster_blend_pixels += len;
+#endif
 }
 
 
@@ -1716,10 +1718,14 @@ void rasterPixel32(uint32_t* dst, uint32_t* src, uint32_t len, uint8_t opacity)
 #endif
     if (opacity == 255) {
         TVG_RASTER_PROFILE_END(g_raster_copy_cycles, g_raster_copy_count);
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
         g_raster_copy_pixels += len;
+#endif
     } else {
         TVG_RASTER_PROFILE_END(g_raster_blend_cycles, g_raster_blend_count);
+#ifdef THORVG_ESP32_VECTOR_SUPPORT
         g_raster_blend_pixels += len;
+#endif
     }
 }
 
