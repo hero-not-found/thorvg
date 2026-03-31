@@ -129,12 +129,22 @@ static inline RGB32 operator*(const RGB32& lhs, float rhs)
 }
 
 
+static inline int32_t clampRgbComponent(int32_t value)
+{
+#if defined(THORVG_ESP32_VECTOR_SUPPORT) || defined(THORVG_ESP32S3_VECTOR_SUPPORT)
+    return tvg::clamp<int32_t>(value, static_cast<int32_t>(0), static_cast<int32_t>(255));
+#else
+    return tvg::clamp(value, 0, 255);
+#endif
+}
+
+
 static inline RGB32 lerp(const RGB32& s, const RGB32& e, float t)
 {
     return {
-        tvg::clamp((int32_t)(s.r + (e.r - s.r) * t), (int32_t)0, (int32_t)255),
-        tvg::clamp((int32_t)(s.g + (e.g - s.g) * t), (int32_t)0, (int32_t)255),
-        tvg::clamp((int32_t)(s.b + (e.b - s.b) * t), (int32_t)0, (int32_t)255)
+        clampRgbComponent((int32_t)(s.r + (e.r - s.r) * t)),
+        clampRgbComponent((int32_t)(s.g + (e.g - s.g) * t)),
+        clampRgbComponent((int32_t)(s.b + (e.b - s.b) * t))
     };
 }
 
