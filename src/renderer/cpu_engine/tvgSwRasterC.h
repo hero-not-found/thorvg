@@ -107,9 +107,15 @@ static bool inline cRasterTranslucentRle(SwSurface* surface, const SwRle* rle, c
             if (span->coverage < 255) src = ALPHA_BLEND(color, span->coverage);
             else src = color;
             auto ialpha = IA(src);
-            for (auto x = 0; x < len; ++x, ++dst) {
-                *dst = src + ALPHA_BLEND(*dst, ialpha);
+            while (len >= 4) {
+                dst[0] = src + ALPHA_BLEND(dst[0], ialpha);
+                dst[1] = src + ALPHA_BLEND(dst[1], ialpha);
+                dst[2] = src + ALPHA_BLEND(dst[2], ialpha);
+                dst[3] = src + ALPHA_BLEND(dst[3], ialpha);
+                dst += 4;
+                len -= 4;
             }
+            while (len--) *dst++ = src + ALPHA_BLEND(*dst, ialpha);
         }
     //8bit grayscale
     } else if (surface->channelSize == sizeof(uint8_t)) {
@@ -120,9 +126,15 @@ static bool inline cRasterTranslucentRle(SwSurface* surface, const SwRle* rle, c
             if (span->coverage < 255) src = MULTIPLY(span->coverage, c.a);
             else src = c.a;
             auto ialpha = ~c.a;
-            for (auto x = 0; x < len; ++x, ++dst) {
-                *dst = src + MULTIPLY(*dst, ialpha);
+            while (len >= 4) {
+                dst[0] = src + MULTIPLY(dst[0], ialpha);
+                dst[1] = src + MULTIPLY(dst[1], ialpha);
+                dst[2] = src + MULTIPLY(dst[2], ialpha);
+                dst[3] = src + MULTIPLY(dst[3], ialpha);
+                dst += 4;
+                len -= 4;
             }
+            while (len--) *dst++ = src + MULTIPLY(*dst, ialpha);
         }
     }
     return true;
@@ -138,9 +150,16 @@ static bool inline cRasterTranslucentRect(SwSurface* surface, const RenderRegion
         auto ialpha = 255 - c.a;
         for (uint32_t y = 0; y < bbox.h(); ++y) {
             auto dst = &buffer[y * surface->stride];
-            for (uint32_t x = 0; x < bbox.w(); ++x, ++dst) {
-                *dst = color + ALPHA_BLEND(*dst, ialpha);
+            auto len = bbox.w();
+            while (len >= 4) {
+                dst[0] = color + ALPHA_BLEND(dst[0], ialpha);
+                dst[1] = color + ALPHA_BLEND(dst[1], ialpha);
+                dst[2] = color + ALPHA_BLEND(dst[2], ialpha);
+                dst[3] = color + ALPHA_BLEND(dst[3], ialpha);
+                dst += 4;
+                len -= 4;
             }
+            while (len--) *dst++ = color + ALPHA_BLEND(*dst, ialpha);
         }
     //8bit grayscale
     } else if (surface->channelSize == sizeof(uint8_t)) {
@@ -148,9 +167,16 @@ static bool inline cRasterTranslucentRect(SwSurface* surface, const RenderRegion
         auto ialpha = ~c.a;
         for (uint32_t y = 0; y < bbox.h(); ++y) {
             auto dst = &buffer[y * surface->stride];
-            for (uint32_t x = 0; x < bbox.w(); ++x, ++dst) {
-                *dst = c.a + MULTIPLY(*dst, ialpha);
+            auto len = bbox.w();
+            while (len >= 4) {
+                dst[0] = c.a + MULTIPLY(dst[0], ialpha);
+                dst[1] = c.a + MULTIPLY(dst[1], ialpha);
+                dst[2] = c.a + MULTIPLY(dst[2], ialpha);
+                dst[3] = c.a + MULTIPLY(dst[3], ialpha);
+                dst += 4;
+                len -= 4;
             }
+            while (len--) *dst++ = c.a + MULTIPLY(*dst, ialpha);
         }
     }
     return true;

@@ -408,10 +408,29 @@ static void _repeat(LottieGroup* parent, Shape* path, LottieRenderPooler<Shape>*
     Array<Shape*> shapes;
 
     ARRAY_REVERSE_FOREACH(repeater, ctx->repeaters) {
-        shapes.reserve(repeater->cnt);
+        shapes.reserve(repeater->cnt * propagators.count);
+
+        Matrix inv;
+        inverse(&repeater->transform, &inv);
+
+        auto scaleXStep = repeater->scale.x * 0.01f;
+        auto scaleYStep = repeater->scale.y * 0.01f;
+        auto scaleX = powf(scaleXStep, repeater->offset);
+        auto scaleY = powf(scaleYStep, repeater->offset);
 
         for (int i = 0; i < repeater->cnt; ++i) {
             auto multiplier = repeater->offset + static_cast<float>(i);
+            auto currentScaleX = scaleX;
+            auto currentScaleY = scaleY;
+
+            Matrix m = tvg::identity();
+            translate(&m, repeater->position * multiplier + repeater->anchor);
+            scale(&m, {currentScaleX, currentScaleY});
+            rotate(&m, repeater->rotation * multiplier);
+            translateR(&m, -repeater->anchor);
+
+            auto repeatTransform = repeater->transform * m;
+
             ARRAY_FOREACH(p, propagators) {
                 auto shape = pooler->pooling();
                 shape->ref();   //prevent pooler returns the same shape
@@ -419,18 +438,12 @@ static void _repeat(LottieGroup* parent, Shape* path, LottieRenderPooler<Shape>*
                 to<ShapeImpl>(shape)->rs.path = to<ShapeImpl>(path)->rs.path;
                 auto opacity = tvg::lerp<uint8_t>(repeater->startOpacity, repeater->endOpacity, static_cast<float>(i + 1) / repeater->cnt);
                 shape->opacity(MULTIPLY(shape->opacity(), opacity));
-
-                auto m = tvg::identity();
-                translate(&m, repeater->position * multiplier + repeater->anchor);
-                scale(&m, {powf(repeater->scale.x * 0.01f, multiplier), powf(repeater->scale.y * 0.01f, multiplier)});
-                rotate(&m, repeater->rotation * multiplier);
-                translateR(&m, -repeater->anchor);
-
-                Matrix inv;
-                inverse(&repeater->transform, &inv);
-                shape->transform((repeater->transform * m) * (inv * shape->transform()));
+                shape->transform(repeatTransform * (inv * shape->transform()));
                 shapes.push(shape);
             }
+
+            scaleX *= scaleXStep;
+            scaleY *= scaleYStep;
         }
 
         propagators.clear();

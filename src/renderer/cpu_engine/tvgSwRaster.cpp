@@ -23,6 +23,7 @@
 #include "tvgMath.h"
 #include "tvgRender.h"
 #include "tvgSwCommon.h"
+#include "tvgSwEsp32s3.h"
 
 /************************************************************************/
 /* Internal Class Implementation                                        */
@@ -1452,17 +1453,105 @@ static bool _rasterRadialGradientRle(SwSurface* surface, const SwRle* rle, const
 /* External Class Implementation                                        */
 /************************************************************************/
 
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+static inline void _espRasterPixel32Copy(uint32_t* dst, const uint32_t* src, uint32_t len)
+{
+    if ((((uintptr_t) dst | (uintptr_t) src) & 0x7u) == 0) {
+        auto dst64 = reinterpret_cast<uint64_t*>(dst);
+        auto src64 = reinterpret_cast<const uint64_t*>(src);
+        while (len >= 8) {
+            dst64[0] = src64[0];
+            dst64[1] = src64[1];
+            dst64[2] = src64[2];
+            dst64[3] = src64[3];
+            len -= 8;
+            dst64 += 4;
+            src64 += 4;
+        }
+        while (len >= 2) {
+            *dst64++ = *src64++;
+            len -= 2;
+        }
+        dst = reinterpret_cast<uint32_t*>(dst64);
+        src = reinterpret_cast<const uint32_t*>(src64);
+    }
+
+    while (len >= 4) {
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        dst[3] = src[3];
+        len -= 4;
+        dst += 4;
+        src += 4;
+    }
+    while (len--) *dst++ = *src++;
+}
+
+
+static inline void _espRasterTranslucentPixel32(uint32_t* dst, const uint32_t* src, uint32_t len, uint8_t opacity)
+{
+    if (opacity == 255) {
+        while (len >= 4) {
+            auto src0 = src[0];
+            auto src1 = src[1];
+            auto src2 = src[2];
+            auto src3 = src[3];
+            dst[0] = src0 + ALPHA_BLEND(dst[0], IA(src0));
+            dst[1] = src1 + ALPHA_BLEND(dst[1], IA(src1));
+            dst[2] = src2 + ALPHA_BLEND(dst[2], IA(src2));
+            dst[3] = src3 + ALPHA_BLEND(dst[3], IA(src3));
+            len -= 4;
+            dst += 4;
+            src += 4;
+        }
+        while (len--) {
+            auto s = *src++;
+            *dst = s + ALPHA_BLEND(*dst, IA(s));
+            ++dst;
+        }
+    } else {
+        while (len >= 4) {
+            auto tmp0 = ALPHA_BLEND(src[0], opacity);
+            auto tmp1 = ALPHA_BLEND(src[1], opacity);
+            auto tmp2 = ALPHA_BLEND(src[2], opacity);
+            auto tmp3 = ALPHA_BLEND(src[3], opacity);
+            dst[0] = tmp0 + ALPHA_BLEND(dst[0], IA(tmp0));
+            dst[1] = tmp1 + ALPHA_BLEND(dst[1], IA(tmp1));
+            dst[2] = tmp2 + ALPHA_BLEND(dst[2], IA(tmp2));
+            dst[3] = tmp3 + ALPHA_BLEND(dst[3], IA(tmp3));
+            len -= 4;
+            dst += 4;
+            src += 4;
+        }
+        while (len--) {
+            auto tmp = ALPHA_BLEND(*src++, opacity);
+            *dst = tmp + ALPHA_BLEND(*dst, IA(tmp));
+            ++dst;
+        }
+    }
+}
+#endif
+
+
 void rasterTranslucentPixel32(uint32_t* dst, uint32_t* src, uint32_t len, uint8_t opacity)
 {
-    //TODO: Support SIMD accelerations
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    _espRasterTranslucentPixel32(dst, src, len, opacity);
+#else
     cRasterTranslucentPixels(dst, src, len, opacity);
+#endif
 }
 
 
 void rasterPixel32(uint32_t* dst, uint32_t* src, uint32_t len, uint8_t opacity)
 {
-    //TODO: Support SIMD accelerations
+#ifdef THORVG_ESP32S3_VECTOR_SUPPORT
+    if (opacity == 255) _espRasterPixel32Copy(dst, src, len);
+    else _espRasterTranslucentPixel32(dst, src, len, opacity);
+#else
     cRasterPixels(dst, src, len, opacity);
+#endif
 }
 
 
