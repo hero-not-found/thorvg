@@ -388,6 +388,10 @@ static SwOutline* _genOutline(SwShape& shape, const RenderShape* rshape, const M
     if (cmdCnt == 0 || ptsCnt == 0) return nullptr;
 
     auto outline = mpool->outline(tid);
+    outline->pts.reserve(ptsCnt + cmdCnt);
+    outline->types.reserve(ptsCnt + cmdCnt);
+    outline->cntrs.reserve(cmdCnt);
+    outline->closed.reserve(cmdCnt);
     auto closed = false;
 
     //Generate Outlines

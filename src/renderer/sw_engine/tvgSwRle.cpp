@@ -190,6 +190,10 @@
 
 #include <limits.h>
 #include "tvgSwCommon.h"
+#include "tvgSwEsp32s3.h"
+
+#define TVG_RLE_DEEP_INC(v) ((void)0)
+#define TVG_RLE_DEEP_SETMAX(v, n) ((void)0)
 
 /************************************************************************/
 /* Internal Class Implementation                                        */
@@ -264,6 +268,8 @@ struct RleWorker
 
     SwCell** yCells;
     int32_t yCnt;
+    SwCell*** rowCursors;
+    int32_t* rowCursorX;
 
     bool invalid;
     bool antiAlias;
@@ -300,9 +306,11 @@ static inline SwPoint FRACT(const SwPoint& pt)
 // less than 7% compared to the exact value.
 static inline int32_t HYPOT(SwPoint pt)
 {
-    if (pt.x < 0) pt.x = -pt.x;
-    if (pt.y < 0) pt.y = -pt.y;
-    return ((pt.x > pt.y) ? (pt.x + (3 * pt.y >> 3)) : (pt.y + (3 * pt.x >> 3)));
+    auto x = tvgSwAbsI32(pt.x);
+    auto y = tvgSwAbsI32(pt.y);
+    auto maxVal = tvgSwMaxI32(x, y);
+    auto minVal = tvgSwMinI32(x, y);
+    return maxVal + (3 * minVal >> 3);
 }
 
 
@@ -310,9 +318,11 @@ static inline int32_t HYPOT(SwPoint pt)
 // This function uses 64-bit arithmetic to safely compute the difference between coordinates.
 static inline uint32_t SAFE_HYPOT(SwPoint& pt1, SwPoint& pt2)
 {
-    auto x = uint32_t(abs(int64_t(pt1.x) - int64_t(pt2.x)));
-    auto y = uint32_t(abs(int64_t(pt1.y) - int64_t(pt2.y)));
-    return (x > y) ? (x + (3 * y >> 3)) : (y + (3 * x >> 3));
+    auto x = tvgSwAbsDiffU32(pt1.x, pt2.x);
+    auto y = tvgSwAbsDiffU32(pt1.y, pt2.y);
+    auto maxVal = tvgSwMaxU32(x, y);
+    auto minVal = tvgSwMinU32(x, y);
+    return maxVal + (3 * minVal >> 3);
 }
 
 
@@ -327,14 +337,14 @@ static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_
     /* compute the coverage line's coverage, depending on the outline fill rule */
     /* the coverage percentage is area/(PIXEL_BITS*PIXEL_BITS*2) */
     auto coverage = static_cast<int>(area >> (PIXEL_BITS * 2 + 1 - 8));    //range 0 - 255
-    if (coverage < 0) coverage = -coverage;
+    coverage = tvgSwAbsI32(coverage);
 
     if (rw.outline->fillRule == FillRule::EvenOdd) {
         coverage &= 511;
         if (coverage > 255) coverage = 511 - coverage;
     } else {
         //normal non-zero winding rule
-        if (coverage > 255) coverage = 255;
+        coverage = tvgSwMinI32(coverage, 255);
     }
 
     if (coverage == 0) return;
@@ -349,32 +359,77 @@ static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_
 
     if (!rw.antiAlias) coverage = 255;
 
-    //see whether we can add this span to the current list
-    if (!rle->spans.empty()) {
-        auto& span = rle->spans.last();
-        if ((span.coverage == coverage) && (span.y == y) && (span.x + span.len == x)) {
-            //Clip x range
-            int32_t xOver = 0;
-            if (x + aCount >= rw.cellMax.x) xOver -= (x + aCount - rw.cellMax.x);
-            if (x < rw.cellMin.x) xOver -= (rw.cellMin.x - x);
-            span.len += (aCount + xOver);
-            return;
-        }
-    }
-
-    //Clip x range
+    //Clip x range once and reuse the result for both merge and append paths.
     int32_t xOver = 0;
     if (x + aCount >= rw.cellMax.x) xOver -= (x + aCount - rw.cellMax.x);
     if (x < rw.cellMin.x) {
         xOver -= (rw.cellMin.x - x);
         x = rw.cellMin.x;
     }
+    aCount += xOver;
 
     //Nothing to draw
-    if (aCount + xOver <= 0) return;
+    if (aCount <= 0) return;
+
+    //see whether we can add this span to the current list
+    if (!rle->spans.empty()) {
+        auto& span = rle->spans.last();
+        if ((span.coverage == coverage) && (span.y == y) && (span.x + span.len == x)) {
+            span.len += aCount;
+            return;
+        }
+    }
 
     //add a span to the current list
-    rle->spans.next() = {(uint16_t)x, (uint16_t)y, uint16_t(aCount + xOver), (uint8_t)coverage};
+    rle->spans.next() = {(uint16_t)x, (uint16_t)y, uint16_t(aCount), (uint8_t)coverage};
+}
+
+
+static inline void _sweepHorizLine(RleWorker& rw, int32_t x, int32_t absY, int32_t area, int32_t aCount)
+{
+    /* `_sweep()` only calls this with rows already known to be inside the band,
+       so we can skip the Y normalization/range checks from `_horizLine()`. */
+    auto coverage = static_cast<int>(area >> (PIXEL_BITS * 2 + 1 - 8));
+    coverage = tvgSwAbsI32(coverage);
+
+    if (rw.outline->fillRule == FillRule::EvenOdd) {
+        coverage &= 511;
+        if (coverage > 255) coverage = 511 - coverage;
+    } else {
+        coverage = tvgSwMinI32(coverage, 255);
+    }
+
+    if (coverage == 0) return;
+
+    if (!rw.antiAlias) coverage = 255;
+
+    x += rw.cellMin.x;
+    if (x >= SHRT_MAX || absY >= SHRT_MAX) {
+        TVGERR("SW_ENGINE", "XY-coordinate overflow!");
+        return;
+    }
+
+    int32_t xOver = 0;
+    if (x + aCount >= rw.cellMax.x) xOver -= (x + aCount - rw.cellMax.x);
+    if (x < rw.cellMin.x) {
+        xOver -= (rw.cellMin.x - x);
+        x = rw.cellMin.x;
+    }
+    aCount += xOver;
+    if (aCount <= 0) return;
+
+    auto rle = rw.rle;
+    if (!rle->spans.empty()) {
+        auto& span = rle->spans.last();
+        if ((span.coverage == coverage) && (span.y == absY) && (span.x + span.len == x)) {
+            span.len += aCount;
+            TVG_RLE_DEEP_INC(g_sweep_span_merges);
+            return;
+        }
+    }
+
+    rle->spans.next() = {(uint16_t)x, (uint16_t)absY, uint16_t(aCount), (uint8_t)coverage};
+    TVG_RLE_DEEP_INC(g_sweep_span_emits);
 }
 
 
@@ -382,47 +437,81 @@ static void _sweep(RleWorker& rw)
 {
     if (rw.cellsCnt == 0) return;
 
+    auto scale = ONE_PIXEL << 1;
+
     for (int y = 0; y < rw.yCnt; ++y) {
-        auto cover = 0;
+        auto coverArea = 0;
         auto x = 0;
         auto cell = rw.yCells[y];
+        if (cell) TVG_RLE_DEEP_INC(g_sweep_rows);
+        auto absY = y + rw.cellMin.y;
 
         while (cell) {
-            if (cell->x > x && cover != 0) _horizLine(rw, x, y, cover * (ONE_PIXEL * 2), cell->x - x);
-            cover += cell->cover;
-            auto area = cover * (ONE_PIXEL * 2) - cell->area;
-            if (area != 0 && cell->x >= 0) _horizLine(rw, cell->x, y, area, 1);
+            if (cell->x > x && coverArea != 0) _sweepHorizLine(rw, x, absY, coverArea, cell->x - x);
+            coverArea += cell->cover * scale;
+            auto area = coverArea - cell->area;
+            if (area != 0 && cell->x >= 0) _sweepHorizLine(rw, cell->x, absY, area, 1);
             x = cell->x + 1;
             cell = cell->next;
         }
 
-        if (cover != 0) _horizLine(rw, x, y, cover * (ONE_PIXEL * 2), rw.cellXCnt - x);
+        if (coverArea != 0) _sweepHorizLine(rw, x, absY, coverArea, rw.cellXCnt - x);
+    }
+}
+
+
+static inline SwCell** _findCellSlot(SwCell** pcell, int32_t x, SwCell** found)
+{
+    while (true) {
+        auto cell = *pcell;
+        if (!cell || cell->x >= x) {
+            *found = cell;
+            return pcell;
+        }
+        TVG_RLE_DEEP_INC(g_findCell_steps);
+        pcell = &cell->next;
     }
 }
 
 
 static SwCell* _findCell(RleWorker& rw)
 {
-    auto x = rw.cellPos.x;
-    if (x > rw.cellXCnt) x = rw.cellXCnt;
+    auto x = tvgSwMinI32(rw.cellPos.x, rw.cellXCnt);
+    auto y = rw.cellPos.y;
+    auto pcell = &rw.yCells[y];
 
-    auto pcell = &rw.yCells[rw.cellPos.y];
-
-    while(true) {
-        auto cell = *pcell;
-        if (!cell || cell->x > x) break;
-        if (cell->x == x) return cell;
-        pcell = &cell->next;
+    auto rowCursor = rw.rowCursors[y];
+    if (rowCursor && rw.rowCursorX[y] <= x) {
+        auto cell = *rowCursor;
+        if (!cell || cell->x <= x) {
+            TVG_RLE_DEEP_INC(g_findCell_cursor_starts);
+            pcell = rowCursor;
+        }
     }
 
-    if (rw.cellsCnt >= rw.maxCells) return nullptr;
+    SwCell* cell;
+    pcell = _findCellSlot(pcell, x, &cell);
 
-    auto cell = rw.cells + rw.cellsCnt++;
+    if (cell && cell->x == x) {
+        TVG_RLE_DEEP_INC(g_findCell_hits);
+        rw.rowCursors[y] = pcell;
+        rw.rowCursorX[y] = x;
+        return cell;
+    }
+
+    if (rw.cellsCnt >= rw.maxCells) {
+        return nullptr;
+    }
+
+    cell = rw.cells + rw.cellsCnt++;
+    TVG_RLE_DEEP_INC(g_findCell_inserts);
     cell->x = x;
     cell->area = 0;
     cell->cover = 0;
     cell->next = *pcell;
     *pcell = cell;
+    rw.rowCursors[y] = pcell;
+    rw.rowCursorX[y] = x;
 
     return cell;
 }
@@ -430,9 +519,14 @@ static SwCell* _findCell(RleWorker& rw)
 
 static bool _recordCell(RleWorker& rw)
 {
+    TVG_RLE_DEEP_INC(g_recordCell_calls);
     if (rw.area | rw.cover) {
+        TVG_RLE_DEEP_INC(g_recordCell_writes);
         auto cell = _findCell(rw);
-        if (!cell) return false;
+        if (!cell) {
+            TVG_RLE_DEEP_INC(g_recordCell_fails);
+            return false;
+        }
         cell->area += rw.area;
         cell->cover += rw.cover;
     }
@@ -463,12 +557,14 @@ static bool _setCell(RleWorker& rw, SwPoint pos)
 
     //Are we moving to a different cell?
     if (pos != rw.cellPos) {
+        TVG_RLE_DEEP_INC(g_setCell_moves);
         //Record the current one if it is valid
         if (!rw.invalid && !_recordCell(rw)) return false;
         rw.area = rw.cover = 0;
         rw.cellPos = pos;
     }
     rw.invalid = ((unsigned)pos.y >= (unsigned)rw.cellYCnt || pos.x >= rw.cellXCnt);
+    if (rw.invalid) TVG_RLE_DEEP_INC(g_setCell_invalids);
 
     return true;
 }
@@ -561,14 +657,14 @@ static bool _lineTo(RleWorker& rw, const SwPoint& to)
             }
         //any other line
         } else {
-            #define SW_UDIV(a, b) (int32_t)((uint64_t(a) * uint64_t(b)) >> 32)
+            #define SW_UDIV(a, b) static_cast<int32_t>(tvgSwMulHiU32(static_cast<uint32_t>(a), static_cast<uint32_t>(b)))
 
             Area prod = diff.x * f1.y - diff.y * f1.x;
 
             /* These macros speed up repetitive divisions by replacing them
                with multiplications and right shifts. */
-            auto dxr = (e1.x != e2.x) ? (int64_t)0xffffffff / diff.x : 0;
-            auto dyr = (e1.y != e2.y) ? (int64_t)0xffffffff / diff.y : 0;
+            auto dxr = (e1.x != e2.x) ? tvgSwRecipI32(diff.x) : 0;
+            auto dyr = (e1.y != e2.y) ? tvgSwRecipI32(diff.y) : 0;
             auto px = diff.x * ONE_PIXEL;
             auto py = diff.y * ONE_PIXEL;
 
@@ -757,11 +853,19 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
   
     RleWorker rw;
     auto cellPool = mpool->cell(tid);
-    auto reqSize = uint32_t(std::max(bbox.w(), bbox.h()) * 0.75f) * sizeof(SwCell);  //experimental decision
+    auto bboxW = static_cast<uint64_t>(bbox.w());
+    auto bboxH = static_cast<uint64_t>(bbox.h());
+    auto estimatedCells = std::max<uint64_t>((bboxW * bboxH) / 12, bboxH * 16);
+    auto reqSize = estimatedCells * sizeof(SwCell);
 
-    // grow by 1.25x and align to multiple of sizeof(SwCell)
+    constexpr uint64_t MAX_CELL_POOL_SIZE = 256ull * 1024ull;
+    if (reqSize > MAX_CELL_POOL_SIZE) reqSize = MAX_CELL_POOL_SIZE;
+
+    // Grow by 1.5x and align to multiple of sizeof(SwCell).
     if (reqSize > cellPool->size) {
-        cellPool->size = ((reqSize + (reqSize >> 2)) / sizeof(SwCell)) * sizeof(SwCell);
+        auto target = reqSize + (reqSize >> 1);
+        if (target > MAX_CELL_POOL_SIZE) target = MAX_CELL_POOL_SIZE;
+        cellPool->size = static_cast<uint32_t>(((target + sizeof(SwCell) - 1) / sizeof(SwCell)) * sizeof(SwCell));
         tvg::free(cellPool->buffer);
         cellPool->buffer = tvg::malloc<SwCell>(cellPool->size);
     }
@@ -773,6 +877,8 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
     rw.cells = nullptr;
     rw.maxCells = 0;
     rw.cellsCnt = 0;
+    rw.rowCursors = nullptr;
+    rw.rowCursorX = nullptr;
     rw.area = 0;
     rw.cover = 0;
     rw.invalid = true;
@@ -787,7 +893,8 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
 
     if (!rle) rw.rle = new SwRle;
     else rw.rle = rle;
-    rw.rle->spans.reserve(256);
+    auto estimatedSpans = static_cast<uint32_t>(std::max<size_t>(bbox.h() * 4, 256));
+    rw.rle->spans.reserve(estimatedSpans);
 
     //Generate RLE
     constexpr auto BAND_SIZE = 40;
@@ -816,12 +923,18 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
             rw.yCells = reinterpret_cast<SwCell**>(rw.buffer);
             rw.yCnt = band->max - band->min;
 
-            int cellStart = sizeof(SwCell*) * (int)rw.yCnt;
-            int cellMod = cellStart % sizeof(SwCell);
-
+            auto yCellsBytes = sizeof(SwCell*) * static_cast<size_t>(rw.yCnt);
+            auto rowCursorBytes = sizeof(SwCell**) * static_cast<size_t>(rw.yCnt);
+            auto rowCursorXBytes = sizeof(int32_t) * static_cast<size_t>(rw.yCnt);
+            auto cellStart = yCellsBytes + rowCursorBytes + rowCursorXBytes;
+            auto cellMod = cellStart % sizeof(SwCell);
             if (cellMod > 0) cellStart += sizeof(SwCell) - cellMod;
 
             auto cellsMax = reinterpret_cast<SwCell*>((char*)rw.buffer + rw.bufferSize);
+            if (cellStart >= rw.bufferSize) goto reduce_bands;
+
+            rw.rowCursors = reinterpret_cast<SwCell***>((char*)rw.buffer + yCellsBytes);
+            rw.rowCursorX = reinterpret_cast<int32_t*>((char*)rw.buffer + yCellsBytes + rowCursorBytes);
             rw.cells = reinterpret_cast<SwCell*>((char*)rw.buffer + cellStart);
 
             if (rw.cells >= cellsMax) goto reduce_bands;
@@ -829,8 +942,11 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
             rw.maxCells = cellsMax - rw.cells;
             if (rw.maxCells < 2) goto reduce_bands;
 
-            for (int y = 0; y < rw.yCnt; ++y)
+            for (int y = 0; y < rw.yCnt; ++y) {
                 rw.yCells[y] = nullptr;
+                rw.rowCursors[y] = nullptr;
+                rw.rowCursorX[y] = -1;
+            }
 
             rw.cellsCnt = 0;
             rw.invalid = true;
@@ -839,6 +955,7 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
             rw.cellYCnt = band->max - band->min;
 
             if (_genRle(rw)) {
+                TVG_RLE_DEEP_SETMAX(g_cells_high_water, static_cast<uint32_t>(rw.cellsCnt));
                 _sweep(rw);
                 --band;
                 continue;
@@ -856,6 +973,7 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
                 rleFree(rw.rle);
                 return nullptr;
             }
+            TVG_RLE_DEEP_INC(g_band_reductions);
 
             if (bottom - top >= rw.bandSize) ++rw.bandShoot;
 
