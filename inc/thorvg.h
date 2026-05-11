@@ -1008,6 +1008,18 @@ struct TVG_API Canvas
      */
     Result sync() noexcept;
 
+    /**
+     * @brief Returns the last rendered dirty region in target pixel coordinates.
+     *
+     * @param[out] x The x-coordinate of the dirty rectangle.
+     * @param[out] y The y-coordinate of the dirty rectangle.
+     * @param[out] w The width of the dirty rectangle, or 0 if nothing changed.
+     * @param[out] h The height of the dirty rectangle, or 0 if nothing changed.
+     *
+     * @note This is an A5 experimental extension to help drive partial LCD updates.
+     */
+    Result dirtyRegionBounds(int32_t* x, int32_t* y, int32_t* w, int32_t* h) noexcept;
+
     _TVG_DECLARE_PRIVATE_BASE(Canvas);
 };
 

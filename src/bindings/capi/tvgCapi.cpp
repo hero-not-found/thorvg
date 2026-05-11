@@ -160,6 +160,13 @@ TVG_API Tvg_Result tvg_canvas_set_viewport(Tvg_Canvas canvas, int32_t x, int32_t
 }
 
 
+TVG_API Tvg_Result tvg_canvas_get_dirty_region(Tvg_Canvas canvas, int32_t* x, int32_t* y, int32_t* w, int32_t* h)
+{
+    if (canvas) return (Tvg_Result) reinterpret_cast<Canvas*>(canvas)->dirtyRegionBounds(x, y, w, h);
+    return TVG_RESULT_INVALID_ARGUMENT;
+}
+
+
 /************************************************************************/
 /* Paint API                                                            */
 /************************************************************************/

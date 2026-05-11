@@ -836,6 +836,14 @@ TVG_API Tvg_Result tvg_canvas_sync(Tvg_Canvas canvas);
  */
 TVG_API Tvg_Result tvg_canvas_set_viewport(Tvg_Canvas canvas, int32_t x, int32_t y, int32_t w, int32_t h);
 
+/**
+ * @brief Returns the last rendered dirty region in target pixel coordinates.
+ *
+ * A zero width or height means nothing changed during the last draw. This is an
+ * A5 experimental extension for partial LCD update experiments.
+ */
+TVG_API Tvg_Result tvg_canvas_get_dirty_region(Tvg_Canvas canvas, int32_t* x, int32_t* y, int32_t* w, int32_t* h);
+
 /** \} */   // end defgroup ThorVGCapi_Canvas
 
 /**

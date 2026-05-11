@@ -341,11 +341,16 @@ bool SwRenderer::postUpdate()
 bool SwRenderer::preRender()
 {
     if (!surface) return false;
-    if (fulldraw || dirtyRegion.deactivated()) return true;
+    lastDirtyRegion = {};
+    if (fulldraw || dirtyRegion.deactivated()) {
+        lastDirtyRegion = {{0, 0}, {(int32_t)surface->w, (int32_t)surface->h}};
+        return true;
+    }
 
     ARRAY_FOREACH(p, tasks) (*p)->done();
 
     dirtyRegion.commit();
+    lastDirtyRegion = dirtyRegion.bounds();
 
     //clear buffer for partial regions
     for (int idx = 0; idx < RenderDirtyRegion::PARTITIONING; ++idx) {
@@ -395,6 +400,12 @@ void SwRenderer::damage(RenderData rd, const RenderRegion& region)
 bool SwRenderer::partial(bool disable)
 {
     return dirtyRegion.deactivate(disable);
+}
+
+
+RenderRegion SwRenderer::dirtyRegionBounds()
+{
+    return lastDirtyRegion;
 }
 
 
