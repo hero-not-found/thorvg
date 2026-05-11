@@ -103,6 +103,12 @@ Result Canvas::sync() noexcept
 }
 
 
+Result Canvas::dirtyRegionBounds(int32_t* x, int32_t* y, int32_t* w, int32_t* h) noexcept
+{
+    return pImpl->dirtyRegionBounds(x, y, w, h);
+}
+
+
 /************************************************************************/
 /* SwCanvas Class Implementation                                        */
 /************************************************************************/

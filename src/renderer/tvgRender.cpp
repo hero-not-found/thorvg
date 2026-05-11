@@ -327,6 +327,20 @@ void RenderDirtyRegion::clear()
 }
 
 
+RenderRegion RenderDirtyRegion::bounds()
+{
+    RenderRegion merged{};
+    for (int idx = 0; idx < PARTITIONING; ++idx) {
+        ARRAY_FOREACH(p, get(idx)) {
+            if (p->invalid()) continue;
+            if (merged.invalid()) merged = *p;
+            else merged.add(*p);
+        }
+    }
+    return merged;
+}
+
+
 void RenderDirtyRegion::subdivide(Array<RenderRegion>& targets, uint32_t idx, RenderRegion& lhs, RenderRegion& rhs)
 {
     RenderRegion temp[3];
