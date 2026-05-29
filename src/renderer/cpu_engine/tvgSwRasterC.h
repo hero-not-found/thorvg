@@ -115,7 +115,10 @@ static bool inline cRasterTranslucentRle(SwSurface* surface, const SwRle* rle, c
                 dst += 4;
                 len -= 4;
             }
-            while (len--) *dst++ = src + ALPHA_BLEND(*dst, ialpha);
+            while (len--) {
+                *dst = src + ALPHA_BLEND(*dst, ialpha);
+                ++dst;
+            }
         }
     //8bit grayscale
     } else if (surface->channelSize == sizeof(uint8_t)) {
@@ -134,7 +137,10 @@ static bool inline cRasterTranslucentRle(SwSurface* surface, const SwRle* rle, c
                 dst += 4;
                 len -= 4;
             }
-            while (len--) *dst++ = src + MULTIPLY(*dst, ialpha);
+            while (len--) {
+                *dst = src + MULTIPLY(*dst, ialpha);
+                ++dst;
+            }
         }
     }
     return true;
@@ -159,7 +165,10 @@ static bool inline cRasterTranslucentRect(SwSurface* surface, const RenderRegion
                 dst += 4;
                 len -= 4;
             }
-            while (len--) *dst++ = color + ALPHA_BLEND(*dst, ialpha);
+            while (len--) {
+                *dst = color + ALPHA_BLEND(*dst, ialpha);
+                ++dst;
+            }
         }
     //8bit grayscale
     } else if (surface->channelSize == sizeof(uint8_t)) {
@@ -176,7 +185,10 @@ static bool inline cRasterTranslucentRect(SwSurface* surface, const RenderRegion
                 dst += 4;
                 len -= 4;
             }
-            while (len--) *dst++ = c.a + MULTIPLY(*dst, ialpha);
+            while (len--) {
+                *dst = c.a + MULTIPLY(*dst, ialpha);
+                ++dst;
+            }
         }
     }
     return true;

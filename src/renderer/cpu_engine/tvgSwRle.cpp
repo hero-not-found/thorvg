@@ -328,63 +328,10 @@ static inline uint32_t SAFE_HYPOT(SwPoint& pt1, SwPoint& pt2)
 }
 
 
-static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_t aCount)
-{
-    x += rw.cellMin.x;
-    y += rw.cellMin.y;
-
-    //Clip Y range
-    if (y < rw.cellMin.y || y >= rw.cellMax.y) return;
-
-    /* compute the coverage line's coverage, depending on the outline fill rule */
-    /* the coverage percentage is area/(PIXEL_BITS*PIXEL_BITS*2) */
-    auto coverage = static_cast<int>(area >> (PIXEL_BITS * 2 + 1 - 8));    //range 0 - 255
-    coverage = tvgSwAbsI32(coverage);
-
-    if (rw.outline->fillRule == FillRule::EvenOdd) {
-        coverage &= 511;
-        if (coverage > 255) coverage = 511 - coverage;
-    } else {
-        //normal non-zero winding rule
-        coverage = tvgSwMinI32(coverage, 255);
-    }
-
-    if (coverage == 0) return;
-
-    auto rle = rw.rle;
-
-    if (!rw.antiAlias) coverage = 255;
-
-    //Clip x range once and reuse the result for both merge and append paths.
-    int32_t xOver = 0;
-    if (x + aCount >= rw.cellMax.x) xOver -= (x + aCount - rw.cellMax.x);
-    if (x < rw.cellMin.x) {
-        xOver -= (rw.cellMin.x - x);
-        x = rw.cellMin.x;
-    }
-    aCount += xOver;
-
-    //Nothing to draw
-    if (aCount <= 0) return;
-
-    //see whether we can add this span to the current list
-    if (!rle->spans.empty()) {
-        auto& span = rle->spans.last();
-        if ((span.coverage == coverage) && (span.y == y) && (span.x + span.len == x)) {
-            span.len += aCount;
-            return;
-        }
-    }
-
-    //add a span to the current list
-    rle->spans.next() = {(uint16_t)x, (uint16_t)y, uint16_t(aCount), (uint8_t)coverage};
-}
-
-
 static inline void _sweepHorizLine(RleWorker& rw, int32_t x, int32_t absY, int32_t area, int32_t aCount)
 {
     /* `_sweep()` only calls this with rows already known to be inside the band,
-       so we can skip the Y normalization/range checks from `_horizLine()`. */
+       so we can skip redundant Y normalization and range checks. */
     auto coverage = static_cast<int>(area >> (PIXEL_BITS * 2 + 1 - 8));
     coverage = tvgSwAbsI32(coverage);
 
