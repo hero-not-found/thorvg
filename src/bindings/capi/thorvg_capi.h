@@ -2127,6 +2127,24 @@ TVG_API Tvg_Result tvg_picture_load_raw(Tvg_Paint picture, const uint32_t *data,
  */
 TVG_API Tvg_Result tvg_picture_load_data(Tvg_Paint picture, const char *data, uint32_t size, const char *mimetype, const char* rpath, bool copy);
 
+/**
+ * @brief Gets decoded raw bitmap data from a bitmap-backed Picture.
+ *
+ * The returned pointer is owned by the Picture and remains valid only while the
+ * Picture and its shared loader are alive. Callers must not free or mutate the
+ * returned data.
+ *
+ * @param[in] picture A Tvg_Paint pointer to a Picture object.
+ * @param[out] data Receives the decoded 32-bit pixel buffer.
+ * @param[out] w Receives the bitmap width in pixels.
+ * @param[out] h Receives the bitmap height in pixels.
+ * @param[out] cs Receives the decoded bitmap colorspace.
+ *
+ * @retval TVG_RESULT_INVALID_ARGUMENT Invalid arguments or non-Picture paint.
+ * @retval TVG_RESULT_NOT_SUPPORTED The Picture has no bitmap data.
+ */
+TVG_API Tvg_Result tvg_picture_get_data(Tvg_Paint picture, const uint32_t **data, uint32_t *w, uint32_t *h, Tvg_Colorspace *cs);
+
 
 /**
  * @brief Sets the asset resolver callback for handling external resources (e.g., images and fonts).

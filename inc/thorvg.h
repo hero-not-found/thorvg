@@ -1716,6 +1716,24 @@ struct TVG_API Picture : Paint
     Result load(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs, bool copy = false) noexcept;
 
     /**
+     * @brief Gets the decoded raw bitmap data for bitmap-backed pictures.
+     *
+     * The returned pointer is owned by the Picture and remains valid only while
+     * the Picture and its loader are alive. Vector-backed pictures return
+     * nullptr.
+     *
+     * @param[out] w The width of the decoded bitmap in pixels.
+     * @param[out] h The height of the decoded bitmap in pixels.
+     * @param[out] cs The colorspace of the decoded bitmap.
+     *
+     * @return A pointer to decoded 32-bit pixel data, or nullptr if no bitmap
+     *         data is available.
+     *
+     * @since 1.0.5
+     */
+    uint32_t* data(uint32_t* w, uint32_t* h, ColorSpace* cs = nullptr) noexcept;
+
+    /**
      * @brief Sets the asset resolver callback for handling external resources (e.g., images and fonts).
      *
      * This callback is invoked when an external asset reference (such as an image source or file path)

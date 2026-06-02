@@ -646,6 +646,25 @@ TVG_API Tvg_Result tvg_picture_load_data(Tvg_Paint picture, const char *data, ui
 }
 
 
+TVG_API Tvg_Result tvg_picture_get_data(Tvg_Paint picture, const uint32_t **data, uint32_t *w, uint32_t *h, Tvg_Colorspace *cs)
+{
+    if (!picture || !data || !w || !h || !cs) return TVG_RESULT_INVALID_ARGUMENT;
+    auto paint = reinterpret_cast<Paint*>(picture);
+    if (paint->type() != Type::Picture) return TVG_RESULT_INVALID_ARGUMENT;
+
+    ColorSpace colorSpace = ColorSpace::Unknown;
+    auto pixels = reinterpret_cast<Picture*>(picture)->data(w, h, &colorSpace);
+    if (!pixels || *w == 0 || *h == 0 || colorSpace == ColorSpace::Unknown) {
+        *data = nullptr;
+        *cs = TVG_COLORSPACE_UNKNOWN;
+        return TVG_RESULT_NOT_SUPPORTED;
+    }
+    *data = pixels;
+    *cs = static_cast<Tvg_Colorspace>(colorSpace);
+    return TVG_RESULT_SUCCESS;
+}
+
+
 TVG_API Tvg_Result tvg_picture_set_asset_resolver(Tvg_Paint picture, Tvg_Picture_Asset_Resolver resolver, void* data)
 {
     if (picture) return (Tvg_Result) reinterpret_cast<Picture*>(picture)->resolver([resolver](Paint* paint, const char* src, void* data) -> bool {
