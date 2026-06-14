@@ -24,6 +24,8 @@
 #include <string>
 #include <thorvg.h>
 #include "thorvg_capi.h"
+#include "tvgPaint.h"
+#include "tvgPicture.h"
 #ifdef THORVG_LOTTIE_LOADER_SUPPORT
 #include <thorvg_lottie.h>
 #endif
@@ -661,6 +663,35 @@ TVG_API Tvg_Result tvg_picture_get_data(Tvg_Paint picture, const uint32_t **data
     }
     *data = pixels;
     *cs = static_cast<Tvg_Colorspace>(colorSpace);
+    return TVG_RESULT_SUCCESS;
+}
+
+
+TVG_API Tvg_Result tvg_picture_map_raw_data(Tvg_Paint picture, uint32_t **data, uint32_t *w, uint32_t *h, Tvg_Colorspace *cs)
+{
+    if (!picture || !data || !w || !h || !cs) return TVG_RESULT_INVALID_ARGUMENT;
+    auto paint = reinterpret_cast<Paint*>(picture);
+    if (paint->type() != Type::Picture) return TVG_RESULT_INVALID_ARGUMENT;
+
+    ColorSpace colorSpace = ColorSpace::Unknown;
+    auto pixels = reinterpret_cast<Picture*>(picture)->data(w, h, &colorSpace);
+    if (!pixels || *w == 0 || *h == 0 || colorSpace == ColorSpace::Unknown) {
+        *data = nullptr;
+        *cs = TVG_COLORSPACE_UNKNOWN;
+        return TVG_RESULT_NOT_SUPPORTED;
+    }
+    *data = pixels;
+    *cs = static_cast<Tvg_Colorspace>(colorSpace);
+    return TVG_RESULT_SUCCESS;
+}
+
+
+TVG_API Tvg_Result tvg_picture_unmap_raw_data(Tvg_Paint picture)
+{
+    if (!picture) return TVG_RESULT_INVALID_ARGUMENT;
+    auto paint = reinterpret_cast<Paint*>(picture);
+    if (paint->type() != Type::Picture) return TVG_RESULT_INVALID_ARGUMENT;
+    PAINT(paint)->mark(RenderUpdateFlag::Image);
     return TVG_RESULT_SUCCESS;
 }
 

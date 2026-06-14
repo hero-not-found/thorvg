@@ -2147,6 +2147,38 @@ TVG_API Tvg_Result tvg_picture_get_data(Tvg_Paint picture, const uint32_t **data
 
 
 /**
+ * @brief Maps mutable raw bitmap data from a Picture object.
+ *
+ * The Picture must already contain bitmap data, such as data loaded with
+ * @ref tvg_picture_load_raw(). Call @ref tvg_picture_unmap_raw_data() after
+ * modifying the returned buffer so the image is marked dirty for rendering.
+ *
+ * @param[in] picture A Tvg_Paint pointer to the Picture object.
+ * @param[out] data Receives the mutable bitmap buffer.
+ * @param[out] w Receives the bitmap width in pixels.
+ * @param[out] h Receives the bitmap height in pixels.
+ * @param[out] cs Receives the bitmap colorspace.
+ *
+ * @retval TVG_RESULT_INVALID_ARGUMENT Invalid arguments or non-Picture paint.
+ * @retval TVG_RESULT_NOT_SUPPORTED The Picture has no bitmap data.
+ */
+TVG_API Tvg_Result tvg_picture_map_raw_data(Tvg_Paint picture, uint32_t **data, uint32_t *w, uint32_t *h, Tvg_Colorspace *cs);
+
+
+/**
+ * @brief Unmaps mutable raw bitmap data and marks a Picture image dirty.
+ *
+ * Call this after mutating a buffer returned by
+ * @ref tvg_picture_map_raw_data().
+ *
+ * @param[in] picture A Tvg_Paint pointer to the Picture object.
+ *
+ * @retval TVG_RESULT_INVALID_ARGUMENT Invalid arguments or non-Picture paint.
+ */
+TVG_API Tvg_Result tvg_picture_unmap_raw_data(Tvg_Paint picture);
+
+
+/**
  * @brief Sets the asset resolver callback for handling external resources (e.g., images and fonts).
  *
  * This callback is invoked when an external asset reference (such as an image source or file path)
