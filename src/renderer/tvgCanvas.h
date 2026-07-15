@@ -128,6 +128,17 @@ struct Canvas::Impl
         return Result::Unknown;
     }
 
+    Result dirtyRegionBounds(int32_t* x, int32_t* y, int32_t* w, int32_t* h)
+    {
+        if (!x || !y || !w || !h) return Result::InvalidArguments;
+        auto region = renderer->dirtyRegionBounds();
+        *x = region.sx();
+        *y = region.sy();
+        *w = region.valid() ? region.sw() : 0;
+        *h = region.valid() ? region.sh() : 0;
+        return Result::Success;
+    }
+
     Result viewport(int32_t x, int32_t y, int32_t w, int32_t h)
     {
         if (status == Status::Synced || status == Status::Damaged) {

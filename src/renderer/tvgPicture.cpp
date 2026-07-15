@@ -62,6 +62,12 @@ Result Picture::load(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs
 }
 
 
+uint32_t* Picture::data(uint32_t* w, uint32_t* h, ColorSpace* cs) noexcept
+{
+    return to<PictureImpl>(this)->data(w, h, cs);
+}
+
+
 Result Picture::resolver(std::function<bool(Paint* paint, const char* src, void* data)> func, void* data) noexcept
 {
     return to<PictureImpl>(this)->set(func, data);

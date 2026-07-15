@@ -874,6 +874,14 @@ TVG_API Tvg_Result tvg_canvas_sync(Tvg_Canvas canvas);
  */
 TVG_API Tvg_Result tvg_canvas_set_viewport(Tvg_Canvas canvas, int32_t x, int32_t y, int32_t w, int32_t h);
 
+/**
+ * @brief Returns the last rendered dirty region in target pixel coordinates.
+ *
+ * A zero width or height means nothing changed during the last draw. This is an
+ * A5 extension used to drive partial display updates.
+ */
+TVG_API Tvg_Result tvg_canvas_get_dirty_region(Tvg_Canvas canvas, int32_t* x, int32_t* y, int32_t* w, int32_t* h);
+
 /** \} */   // end defgroup ThorVGCapi_Canvas
 
 /**
@@ -2161,6 +2169,25 @@ TVG_API Tvg_Result tvg_picture_load_data(Tvg_Paint picture, const char *data, ui
 
 
 /**
+ * @brief Gets decoded raw bitmap data from a bitmap-backed Picture.
+ *
+ * The returned pointer is owned by the Picture and remains valid only while the
+ * Picture and its shared loader are alive. Callers must not free or mutate the
+ * returned data. This is an A5 extension used by the image decode pipeline.
+ *
+ * @param[in] picture A Tvg_Paint pointer to a Picture object.
+ * @param[out] data Receives the decoded 32-bit pixel buffer.
+ * @param[out] w Receives the bitmap width in pixels.
+ * @param[out] h Receives the bitmap height in pixels.
+ * @param[out] cs Receives the decoded bitmap colorspace.
+ *
+ * @retval TVG_RESULT_INVALID_ARGUMENT Invalid arguments or non-Picture paint.
+ * @retval TVG_RESULT_NOT_SUPPORTED The Picture has no bitmap data.
+ */
+TVG_API Tvg_Result tvg_picture_get_data(Tvg_Paint picture, const uint32_t **data, uint32_t *w, uint32_t *h, Tvg_Colorspace *cs);
+
+
+/**
  * @brief Sets the asset resolver callback for handling external resources (e.g., images and fonts).
  *
  * This callback is invoked when an external asset reference (such as an image source or file path)
@@ -3436,6 +3463,24 @@ TVG_API Tvg_Result tvg_lottie_animation_get_marker_info(Tvg_Animation animation,
  * @since 1.0
  */
 TVG_API Tvg_Result tvg_lottie_animation_tween(Tvg_Animation animation, float from, float to, float progress);
+
+
+/**
+ * @brief Updates the value of an expression variable for a specific layer.
+ *
+ * @param[in] animation The Tvg_Animation pointer to the Lottie animation object.
+ * @param[in] layer The name of the layer containing the variable to be updated.
+ * @param[in] ix The property index of the variable within the layer.
+ * @param[in] var The name of the variable to be updated.
+ * @param[in] val The new value to assign to the variable.
+ *
+ * @retval TVG_RESULT_INSUFFICIENT_CONDITION If the animation is not loaded.
+ * @retval TVG_RESULT_INVALID_ARGUMENT When the given parameter is invalid.
+ * @retval TVG_RESULT_NOT_SUPPORTED When neither the layer nor the property is found in the current animation.
+ *
+ * @note This is an A5 compatibility extension for writable expressions.
+ */
+TVG_API Tvg_Result tvg_lottie_animation_assign(Tvg_Animation animation, const char* layer, uint32_t ix, const char* var, float val);
 
 
 /**

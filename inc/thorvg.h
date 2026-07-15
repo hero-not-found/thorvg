@@ -1006,6 +1006,18 @@ struct TVG_API Canvas
      */
     Result sync() noexcept;
 
+    /**
+     * @brief Returns the last rendered dirty region in target pixel coordinates.
+     *
+     * @param[out] x The x-coordinate of the dirty rectangle.
+     * @param[out] y The y-coordinate of the dirty rectangle.
+     * @param[out] w The width of the dirty rectangle, or 0 if nothing changed.
+     * @param[out] h The height of the dirty rectangle, or 0 if nothing changed.
+     *
+     * @note This is an A5 extension used to drive partial display updates.
+     */
+    Result dirtyRegionBounds(int32_t* x, int32_t* y, int32_t* w, int32_t* h) noexcept;
+
     _TVG_DECLARE_PRIVATE_BASE(Canvas);
 };
 
@@ -1705,6 +1717,21 @@ struct TVG_API Picture : Paint
      * @since 0.9
      */
     Result load(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs, bool copy = false) noexcept;
+
+    /**
+     * @brief Gets decoded raw bitmap data from a bitmap-backed picture.
+     *
+     * The returned pointer is owned by the Picture and remains valid only while
+     * the Picture and its loader are alive. Vector-backed pictures return
+     * @c nullptr.
+     *
+     * @param[out] w The bitmap width in pixels.
+     * @param[out] h The bitmap height in pixels.
+     * @param[out] cs The bitmap colorspace.
+     *
+     * @note This is an A5 extension used by the image decode pipeline.
+     */
+    uint32_t* data(uint32_t* w, uint32_t* h, ColorSpace* cs = nullptr) noexcept;
 
     /**
      * @brief Sets the asset resolver callback for handling external resources (e.g., images and fonts).

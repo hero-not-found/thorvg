@@ -162,11 +162,19 @@ struct RenderRegion
 };
 
 
+#ifndef THORVG_DIRTY_REGION_PARTITIONING
+#define THORVG_DIRTY_REGION_PARTITIONING 16
+#endif
+
+static_assert(THORVG_DIRTY_REGION_PARTITIONING == 1 || THORVG_DIRTY_REGION_PARTITIONING == 4 ||
+              THORVG_DIRTY_REGION_PARTITIONING == 16 || THORVG_DIRTY_REGION_PARTITIONING == 64,
+              "Unsupported dirty region partitioning");
+
 #ifdef THORVG_PARTIAL_RENDER_SUPPORT
     struct RenderDirtyRegion
     {
     public:
-        static constexpr const int PARTITIONING = 16;   //must be N*N
+        static constexpr const int PARTITIONING = THORVG_DIRTY_REGION_PARTITIONING;   //must be N*N
         bool support = true;
 
         void init(uint32_t w, uint32_t h);
@@ -174,6 +182,7 @@ struct RenderRegion
         bool add(const RenderRegion& bbox);
         bool add(const RenderRegion& prv, const RenderRegion& cur);  //collect the old and new dirty regions together
         void clear();
+        RenderRegion bounds();
 
         bool deactivate(bool on)
         {
@@ -213,7 +222,7 @@ struct RenderRegion
 #else
     struct RenderDirtyRegion
     {
-        static constexpr const int PARTITIONING = 16;   //must be N*N
+        static constexpr const int PARTITIONING = THORVG_DIRTY_REGION_PARTITIONING;   //must be N*N
         bool support = true;
 
         void init(uint32_t w, uint32_t h) {}
@@ -221,6 +230,7 @@ struct RenderRegion
         bool add(TVG_UNUSED const RenderRegion& bbox) { return true; }
         bool add(TVG_UNUSED const RenderRegion& prv, TVG_UNUSED const RenderRegion& cur) { return true; }
         void clear() {}
+        RenderRegion bounds() { return {}; }
         bool deactivate(TVG_UNUSED bool on) { return true; }
         bool deactivated() { return true; }
         const RenderRegion& partition(TVG_UNUSED int idx) { static RenderRegion tmp{}; return tmp; }
@@ -639,6 +649,7 @@ public:
     //partial rendering
     virtual void damage(RenderData rd, const RenderRegion& region) = 0;
     virtual bool partial(bool disable) = 0;
+    virtual RenderRegion dirtyRegionBounds() { return {}; }
 };
 
 static inline bool MASK_REGION_MERGING(MaskMethod method)

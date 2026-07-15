@@ -87,7 +87,8 @@ struct SceneImpl : Scene
     {
         if (paints.empty()) return true;
 
-        if (needComposition(opacity)) {
+        auto composed = needComposition(opacity);
+        if (composed) {
             /* Overriding opacity value. If this scene is half-translucent,
                It must do intermediate composition with that opacity value. */
             this->opacity = opacity;
@@ -95,14 +96,15 @@ struct SceneImpl : Scene
         }
 
         //allow partial rendering?
-        auto recover = fixed ? renderer->partial(true) : false;
+        auto fullUpdate = fixed || composed;
+        auto recover = fullUpdate ? renderer->partial(true) : false;
 
         for (auto paint : paints) {
             PAINT(paint)->update(renderer, transform, clips, opacity, flag, false);
         }
 
         //recover the condition
-        if (fixed) renderer->partial(recover);
+        if (fullUpdate) renderer->partial(recover);
 
         if (effects) {
             ARRAY_FOREACH(p, *effects) {
@@ -122,7 +124,8 @@ struct SceneImpl : Scene
 
         //bounds(renderer) here hinders parallelization
         //TODO: we can bring the precise effects region here
-        if (fixed || effects) impl.damage(vport);
+        if (composed) impl.damage(bounds());
+        else if (fixed || effects) impl.damage(vport);
 
         return true;
     }

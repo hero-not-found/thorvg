@@ -72,6 +72,7 @@ struct SwRenderer : RenderMethod
     //partial rendering
     void damage(RenderData rd, const RenderRegion& region) override;
     bool partial(bool disable) override;
+    RenderRegion dirtyRegionBounds() override;
 
     SwRenderer(uint32_t threads, EngineOption op);
     static bool term();
@@ -85,6 +86,7 @@ private:
     Array<SwTask*>       tasks;                       //async task list
     Array<SwSurface*>    compositors;                 //render targets cache list
     RenderDirtyRegion    dirtyRegion;                 //partial rendering support
+    RenderRegion         lastDirtyRegion;             //last committed dirty bounds
 
     ~SwRenderer();
 

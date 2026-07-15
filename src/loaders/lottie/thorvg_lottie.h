@@ -131,6 +131,18 @@ public:
     const char* marker(uint32_t idx, float* begin, float* end) noexcept;
 
     /**
+     * @brief Updates an expression variable for a specific layer.
+     *
+     * @param[in] layer The name of the layer containing the variable.
+     * @param[in] ix The property index within the layer.
+     * @param[in] var The expression variable name.
+     * @param[in] val The new variable value.
+     *
+     * @note This is an A5 compatibility extension for writable expressions.
+     */
+    Result assign(const char* layer, uint32_t ix, const char* var, float val);
+
+    /**
      * @brief Creates a new slot based on the given Lottie slot data.
      *
      * This function parses the provided JSON-formatted slot data and generates

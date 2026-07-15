@@ -125,6 +125,119 @@ TEST_CASE("Scene Clear And Reuse Shape", "[tvgScene]")
     REQUIRE(Initializer::term() == Result::Success);
 }
 
+TEST_CASE("Scene Restores Stroke Geometry After Zero Opacity", "[tvgScene]")
+{
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        auto canvas = unique_ptr<SwCanvas>(SwCanvas::gen(EngineOption::SmartRender));
+        REQUIRE(canvas);
+
+        uint32_t buffer[100 * 100] = {};
+        REQUIRE(canvas->target(buffer, 100, 100, 100, ColorSpace::ARGB8888) == Result::Success);
+
+        auto scene = Scene::gen();
+        REQUIRE(scene);
+
+        auto fill = Shape::gen();
+        REQUIRE(fill);
+        REQUIRE(fill->appendRect(10, 10, 20, 20) == Result::Success);
+        REQUIRE(fill->fill(255, 255, 255) == Result::Success);
+        REQUIRE(scene->add(fill) == Result::Success);
+
+        auto stroke = Shape::gen();
+        REQUIRE(stroke);
+        REQUIRE(stroke->appendRect(60, 10, 20, 20) == Result::Success);
+        REQUIRE(stroke->strokeWidth(4) == Result::Success);
+        REQUIRE(stroke->strokeFill(255, 255, 255) == Result::Success);
+        REQUIRE(scene->add(stroke) == Result::Success);
+
+        REQUIRE(canvas->add(scene) == Result::Success);
+
+        auto render = [&]() {
+            REQUIRE(canvas->update() == Result::Success);
+            REQUIRE(canvas->draw() == Result::Success);
+            REQUIRE(canvas->sync() == Result::Success);
+        };
+        auto hasPixels = [&](uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+            for (uint32_t py = y; py < y + h; ++py) {
+                for (uint32_t px = x; px < x + w; ++px) {
+                    if (buffer[py * 100 + px] != 0) return true;
+                }
+            }
+            return false;
+        };
+
+        render();
+        REQUIRE(hasPixels(10, 10, 20, 20));
+        REQUIRE(hasPixels(58, 8, 24, 24));
+
+        REQUIRE(scene->opacity(0) == Result::Success);
+        render();
+        REQUIRE_FALSE(hasPixels(10, 10, 20, 20));
+        REQUIRE_FALSE(hasPixels(58, 8, 24, 24));
+
+        REQUIRE(scene->opacity(255) == Result::Success);
+        render();
+        REQUIRE(hasPixels(10, 10, 20, 20));
+        REQUIRE(hasPixels(58, 8, 24, 24));
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("Translucent Scene Redraws Static Children", "[tvgScene]")
+{
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        auto canvas = unique_ptr<SwCanvas>(SwCanvas::gen(EngineOption::SmartRender));
+        REQUIRE(canvas);
+
+        uint32_t buffer[100 * 100] = {};
+        REQUIRE(canvas->target(buffer, 100, 100, 100, ColorSpace::ARGB8888) == Result::Success);
+
+        auto scene = Scene::gen();
+        REQUIRE(scene);
+
+        auto dynamic = Shape::gen();
+        REQUIRE(dynamic);
+        REQUIRE(dynamic->appendRect(10, 10, 20, 20) == Result::Success);
+        REQUIRE(dynamic->fill(255, 255, 255) == Result::Success);
+        REQUIRE(scene->add(dynamic) == Result::Success);
+
+        auto fixed = Shape::gen();
+        REQUIRE(fixed);
+        REQUIRE(fixed->appendRect(60, 10, 20, 20) == Result::Success);
+        REQUIRE(fixed->fill(255, 255, 255) == Result::Success);
+        REQUIRE(scene->add(fixed) == Result::Success);
+
+        REQUIRE(scene->opacity(128) == Result::Success);
+        REQUIRE(canvas->add(scene) == Result::Success);
+
+        auto render = [&]() {
+            REQUIRE(canvas->update() == Result::Success);
+            REQUIRE(canvas->draw() == Result::Success);
+            REQUIRE(canvas->sync() == Result::Success);
+        };
+        auto hasPixels = [&](uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+            for (uint32_t py = y; py < y + h; ++py) {
+                for (uint32_t px = x; px < x + w; ++px) {
+                    if (buffer[py * 100 + px] != 0) return true;
+                }
+            }
+            return false;
+        };
+
+        render();
+        REQUIRE(hasPixels(10, 10, 20, 20));
+        REQUIRE(hasPixels(60, 10, 20, 20));
+
+        REQUIRE(dynamic->fill(255, 0, 0) == Result::Success);
+        render();
+        REQUIRE(hasPixels(10, 10, 20, 20));
+        REQUIRE(hasPixels(60, 10, 20, 20));
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
 TEST_CASE("Scene Effects", "[tvgScene]")
 {
     REQUIRE(Initializer::init() == Result::Success);

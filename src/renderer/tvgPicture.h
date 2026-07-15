@@ -225,7 +225,7 @@ struct PictureImpl : Picture
         return new PictureIterator(vector);
     }
 
-    uint32_t* data(uint32_t* w, uint32_t* h)
+    uint32_t* data(uint32_t* w, uint32_t* h, ColorSpace* cs = nullptr)
     {
         //Try it, If not loaded yet.
         load();
@@ -237,6 +237,7 @@ struct PictureImpl : Picture
             if (w) *w = 0;
             if (h) *h = 0;
         }
+        if (cs) *cs = bitmap ? bitmap->cs : ColorSpace::Unknown;
         if (bitmap) return bitmap->buf32;
         else return nullptr;
     }

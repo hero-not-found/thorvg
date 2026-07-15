@@ -168,6 +168,13 @@ TVG_API Tvg_Result tvg_canvas_set_viewport(Tvg_Canvas canvas, int32_t x, int32_t
 }
 
 
+TVG_API Tvg_Result tvg_canvas_get_dirty_region(Tvg_Canvas canvas, int32_t* x, int32_t* y, int32_t* w, int32_t* h)
+{
+    if (canvas) return (Tvg_Result) reinterpret_cast<Canvas*>(canvas)->dirtyRegionBounds(x, y, w, h);
+    return TVG_RESULT_INVALID_ARGUMENT;
+}
+
+
 /************************************************************************/
 /* Paint API                                                            */
 /************************************************************************/
@@ -644,6 +651,25 @@ TVG_API Tvg_Result tvg_picture_load_data(Tvg_Paint picture, const char *data, ui
 {
     if (picture) return (Tvg_Result) reinterpret_cast<Picture*>(picture)->load(data, size, mimetype ? mimetype : "", rpath ? rpath : "", copy);
     return TVG_RESULT_INVALID_ARGUMENT;
+}
+
+
+TVG_API Tvg_Result tvg_picture_get_data(Tvg_Paint picture, const uint32_t **data, uint32_t *w, uint32_t *h, Tvg_Colorspace *cs)
+{
+    if (!picture || !data || !w || !h || !cs) return TVG_RESULT_INVALID_ARGUMENT;
+    auto paint = reinterpret_cast<Paint*>(picture);
+    if (paint->type() != Type::Picture) return TVG_RESULT_INVALID_ARGUMENT;
+
+    ColorSpace colorSpace = ColorSpace::Unknown;
+    auto pixels = reinterpret_cast<Picture*>(picture)->data(w, h, &colorSpace);
+    if (!pixels || *w == 0 || *h == 0 || colorSpace == ColorSpace::Unknown) {
+        *data = nullptr;
+        *cs = TVG_COLORSPACE_UNKNOWN;
+        return TVG_RESULT_NOT_SUPPORTED;
+    }
+    *data = pixels;
+    *cs = static_cast<Tvg_Colorspace>(colorSpace);
+    return TVG_RESULT_SUCCESS;
 }
 
 
@@ -1290,6 +1316,17 @@ TVG_API Tvg_Result tvg_lottie_animation_tween(Tvg_Animation animation, float fro
 #endif
     return TVG_RESULT_NOT_SUPPORTED;
 }
+
+
+TVG_API Tvg_Result tvg_lottie_animation_assign(Tvg_Animation animation, const char* layer, uint32_t ix, const char* var, float val)
+{
+#ifdef THORVG_LOTTIE_LOADER_SUPPORT
+    if (animation) return (Tvg_Result) reinterpret_cast<LottieAnimation*>(animation)->assign(layer, ix, var, val);
+    return TVG_RESULT_INVALID_ARGUMENT;
+#endif
+    return TVG_RESULT_NOT_SUPPORTED;
+}
+
 
 TVG_API Tvg_Result tvg_lottie_animation_set_quality(Tvg_Animation animation, uint8_t value)
 {

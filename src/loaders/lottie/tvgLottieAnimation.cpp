@@ -109,6 +109,21 @@ const char* LottieAnimation::marker(uint32_t idx, float* begin, float* end) noex
     return loader->markers(idx, begin, end);
 }
 
+
+Result LottieAnimation::assign(const char* layer, uint32_t ix, const char* var, float val)
+{
+    if (!layer || !var) return Result::InvalidArguments;
+
+    auto loader = to<PictureImpl>(pImpl->picture)->loader;
+    if (!loader) return Result::InsufficientCondition;
+    if (static_cast<LottieLoader*>(loader)->assign(layer, ix, var, val)) {
+        PAINT(pImpl->picture)->mark(RenderUpdateFlag::All);
+        return Result::Success;
+    }
+
+    return Result::NonSupport;
+}
+
 Result LottieAnimation::quality(uint8_t value) noexcept
 {
     if (value > 100) return Result::InvalidArguments;

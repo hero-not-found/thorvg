@@ -74,7 +74,11 @@ struct SwTask : Task
             flags[1] = flags[0]; //backup
             return true;
         }
-        flags[0] |= flags[1];  //applied the previous flags if it's skipped before
+        auto skipped = flags[1];
+        flags[0] |= skipped;  //applied the previous flags if it's skipped before
+        // invisible() clears curBox. Rebuild geometry when a zero-opacity task
+        // becomes visible again, even if only its color had changed.
+        if (skipped & RenderUpdateFlag::Color) flags[0] |= RenderUpdateFlag::Transform;
         flags[1] = RenderUpdateFlag::None;  //reset
         return false;
     }
@@ -317,11 +321,16 @@ bool SwRenderer::postUpdate()
 bool SwRenderer::preRender()
 {
     if (!surface) return false;
-    if (fulldraw || dirtyRegion.deactivated()) return true;
+    lastDirtyRegion = {};
+    if (fulldraw || dirtyRegion.deactivated()) {
+        lastDirtyRegion = {{0, 0}, {(int32_t)surface->w, (int32_t)surface->h}};
+        return true;
+    }
 
     ARRAY_FOREACH(p, tasks) (*p)->done();
 
     dirtyRegion.commit();
+    lastDirtyRegion = dirtyRegion.bounds();
 
     //clear buffer for partial regions
     for (int idx = 0; idx < RenderDirtyRegion::PARTITIONING; ++idx) {
@@ -371,6 +380,12 @@ void SwRenderer::damage(RenderData rd, const RenderRegion& region)
 bool SwRenderer::partial(bool disable)
 {
     return dirtyRegion.deactivate(disable);
+}
+
+
+RenderRegion SwRenderer::dirtyRegionBounds()
+{
+    return lastDirtyRegion;
 }
 
 
