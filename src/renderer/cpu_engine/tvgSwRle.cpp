@@ -311,13 +311,13 @@ static void _splitLine(SwPoint* base)
     base[1] = {(base[0].x >> 1) + (base[1].x >> 1), (base[0].y >> 1) + (base[1].y >> 1)};
 }
 
-static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_t aCount)
+static bool _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_t aCount)
 {
     x += rw.cellMin.x;
     y += rw.cellMin.y;
 
     //Clip Y range
-    if (y < rw.cellMin.y || y >= rw.cellMax.y) return;
+    if (y < rw.cellMin.y || y >= rw.cellMax.y) return true;
 
     /* compute the coverage line's coverage, depending on the outline fill rule */
     /* the coverage percentage is area/(PIXEL_BITS*PIXEL_BITS*2) */
@@ -332,7 +332,7 @@ static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_
         if (coverage > 255) coverage = 255;
     }
 
-    if (coverage == 0) return;
+    if (coverage == 0) return true;
 
     auto rle = rw.rle;
 
@@ -347,7 +347,7 @@ static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_
             if (x + aCount >= rw.cellMax.x) xOver -= (x + aCount - rw.cellMax.x);
             if (x < rw.cellMin.x) xOver -= (rw.cellMin.x - x);
             span.len += (aCount + xOver);
-            return;
+            return true;
         }
     }
 
@@ -360,16 +360,19 @@ static void _horizLine(RleWorker& rw, int32_t x, int32_t y, int32_t area, int32_
     }
 
     //Nothing to draw
-    if (aCount + xOver <= 0) return;
+    if (aCount + xOver <= 0) return true;
 
     //add a span to the current list
-    rle->spans.next() = {x, y,  aCount + xOver, (uint8_t)coverage};
+    auto span = rle->spans.next();
+    if (!span) return false;
+    *span = {x, y, aCount + xOver, (uint8_t)coverage};
+    return true;
 }
 
 
-static void _sweep(RleWorker& rw)
+static bool _sweep(RleWorker& rw)
 {
-    if (rw.cellsCnt == 0) return;
+    if (rw.cellsCnt == 0) return true;
 
     for (int y = 0; y < rw.yCnt; ++y) {
         auto cover = 0;
@@ -377,16 +380,20 @@ static void _sweep(RleWorker& rw)
         auto cell = rw.yCells[y];
 
         while (cell) {
-            if (cell->x > x && cover != 0) _horizLine(rw, x, y, cover * (ONE_PIXEL * 2), cell->x - x);
+            if (cell->x > x && cover != 0 &&
+                !_horizLine(rw, x, y, cover * (ONE_PIXEL * 2), cell->x - x)) return false;
             cover += cell->cover;
             auto area = cover * (ONE_PIXEL * 2) - cell->area;
-            if (area != 0 && cell->x >= 0) _horizLine(rw, cell->x, y, area, 1);
+            if (area != 0 && cell->x >= 0 &&
+                !_horizLine(rw, cell->x, y, area, 1)) return false;
             x = cell->x + 1;
             cell = cell->next;
         }
 
-        if (cover != 0) _horizLine(rw, x, y, cover * (ONE_PIXEL * 2), rw.cellXCnt - x);
+        if (cover != 0 &&
+            !_horizLine(rw, x, y, cover * (ONE_PIXEL * 2), rw.cellXCnt - x)) return false;
     }
+    return true;
 }
 
 
@@ -779,7 +786,10 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
 
     if (!rle) rw.rle = new SwRle;
     else rw.rle = rle;
-    rw.rle->spans.reserve(256);
+    if (!rw.rle || !rw.rle->spans.reserve(256)) {
+        rleFree(rw.rle);
+        return nullptr;
+    }
 
     //Generate RLE
     constexpr auto BAND_SIZE = 40;
@@ -831,7 +841,10 @@ SwRle* rleRender(SwRle* rle, const SwOutline* outline, const RenderRegion& bbox,
             rw.cellYCnt = band->max - band->min;
 
             if (_genRle(rw)) {
-                _sweep(rw);
+                if (!_sweep(rw)) {
+                    rleFree(rw.rle);
+                    return nullptr;
+                }
                 --band;
                 continue;
             }
@@ -901,7 +914,7 @@ bool rleClip(SwRle* rle, const SwRle *clip)
     if (rle->spans.empty() || clip->spans.empty()) return false;
 
     Array<SwSpan> out;
-    out.reserve(std::max(rle->spans.count, clip->spans.count));
+    if (!out.reserve(std::max(rle->spans.count, clip->spans.count))) return false;
 
     const SwSpan *end;
     auto spans = rle->fetch(clip->spans.first().y, clip->spans.last().y, &end);
@@ -935,7 +948,11 @@ bool rleClip(SwRle* rle, const SwRle *clip)
             //clip span region
             auto x = std::max(spans->x, temp->x);
             auto len = std::min((spans->x + spans->len), (temp->x + temp->len)) - x;
-            if (len > 0) out.next() = {x, temp->y, len, (uint8_t)(((spans->coverage * temp->coverage) + 0xff) >> 8)};
+            if (len > 0) {
+                auto span = out.next();
+                if (!span) return false;
+                *span = {x, temp->y, len, (uint8_t)(((spans->coverage * temp->coverage) + 0xff) >> 8)};
+            }
             ++temp;
         }
         ++spans;

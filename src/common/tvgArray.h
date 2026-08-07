@@ -57,8 +57,7 @@ struct Array
     void push(T element)
     {
         if (count + 1 > reserved) {
-            reserved = count + (count + 2) / 2;
-            data = tvg::realloc<T>(data, sizeof(T) * reserved);
+            if (!reserve(count + (count + 2) / 2)) return;
         }
         data[count++] = element;
     }
@@ -66,7 +65,7 @@ struct Array
     void push(const Array<T>& rhs)
     {
         if (rhs.count == 0) return;
-        grow(rhs.count);
+        if (!grow(rhs.count)) return;
         memcpy(data + count, rhs.data, rhs.count * sizeof(T));
         count += rhs.count;
     }
@@ -74,8 +73,10 @@ struct Array
     bool reserve(uint32_t size)
     {
         if (size > reserved) {
+            auto replacement = tvg::realloc<T>(data, sizeof(T) * size);
+            if (!replacement) return false;
+            data = replacement;
             reserved = size;
-            data = tvg::realloc<T>(data, sizeof(T) * reserved);
         }
         return true;
     }
@@ -97,7 +98,7 @@ struct Array
 
     void operator=(const Array& rhs)
     {
-        reserve(rhs.count);
+        if (!reserve(rhs.count)) return;
         if (rhs.count > 0) memcpy(data, rhs.data, sizeof(T) * rhs.count);
         count = rhs.count;
     }
@@ -148,10 +149,10 @@ struct Array
         return data[count - 1];
     }
 
-    T& next()
+    T* next()
     {
-        if (full()) grow(count + 1);
-        return data[count++];
+        if (full() && !grow(count + 1)) return nullptr;
+        return &data[count++];
     }
 
     T& first()

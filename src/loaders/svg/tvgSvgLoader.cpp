@@ -3950,6 +3950,7 @@ bool SvgLoader::open(const char* data, uint32_t size, const LoaderOps* ops, bool
 
     if (copy) {
         content = tvg::malloc<char>(size + 1);
+        if (!content) return false;
         memcpy((char*)content, data, size);
         content[size] = '\0';
     } else content = (char*)data;
