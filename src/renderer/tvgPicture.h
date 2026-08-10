@@ -299,8 +299,12 @@ struct PictureImpl : Picture
 
     RenderRegion bounds()
     {
+        //A freshly loaded picture may be queried for damage before its first
+        //renderer update materializes the lazy vector or bitmap payload.
+        if (!vector && !bitmap) load();
         if (vector) return vector->pImpl->bounds();
-        return impl.renderer->region(impl.rd);
+        if (bitmap && impl.renderer) return impl.renderer->region(impl.rd);
+        return {};
     }
 
     Result load(Loader* loader)
